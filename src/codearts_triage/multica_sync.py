@@ -214,6 +214,157 @@ class MulticaSync:
 
         return None
 
+    def find_existing_issue(
+        self, issue_id: int, known_multica_issue_id: Optional[str] = None
+    ) -> Optional[dict[str, Any]]:
+        """查找同一 CodeArts Bug 已创建的 Multica Issue（含已关闭任务）。"""
+        multica_bin = shutil.which("multica") or "multica"
+        if known_multica_issue_id:
+            try:
+                proc = subprocess.run(
+                    [multica_bin, "issue", "get", known_multica_issue_id, "--output", "json"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                return json.loads(proc.stdout)
+            except Exception:
+                logger.warning(
+                    "Stored Multica issue %s for CodeArts bug %s is unavailable; searching by title",
+                    known_multica_issue_id,
+                    issue_id,
+                )
+
+        title_prefix = f"【CodeArts Bug #{issue_id}】"
+        try:
+            proc = subprocess.run(
+                [
+                    multica_bin,
+                    "issue",
+                    "search",
+                    title_prefix,
+                    "--include-closed",
+                    "--limit",
+                    "20",
+                    "--output",
+                    "json",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(proc.stdout)
+            matches = [
+                item
+                for item in payload.get("issues", [])
+                if str(item.get("title") or "").startswith(title_prefix)
+            ]
+            # 历史版本若已有重复卡片，固定复用最早创建的原任务。
+            return min(matches, key=lambda item: item.get("created_at") or "") if matches else None
+        except Exception as exc:
+            # 不确定是否已有任务时禁止继续 create，以免 CLI/网络抖动制造重复卡片。
+            raise RuntimeError(
+                f"failed to check existing Multica issue for CodeArts bug {issue_id}"
+            ) from exc
+
+    def _set_codearts_metadata(self, multica_issue_id: str, codearts_issue_id: int) -> None:
+        multica_bin = shutil.which("multica") or "multica"
+        try:
+            subprocess.run(
+                [
+                    multica_bin,
+                    "issue",
+                    "metadata",
+                    "set",
+                    multica_issue_id,
+                    "--key",
+                    "codearts_bug_id",
+                    "--value",
+                    str(codearts_issue_id),
+                    "--type",
+                    "number",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to set CodeArts metadata on Multica issue %s: %s", multica_issue_id, exc)
+
+    def _retrigger_existing_issue(
+        self,
+        existing: dict[str, Any],
+        codearts_issue_id: int,
+        source_status: Optional[dict[str, Any]] = None,
+        latest_comment: Optional[dict[str, Any]] = None,
+        source_updated_time: Optional[str] = None,
+    ) -> None:
+        """把测试打回追加到原任务，并重新运行原任务的当前智能体。"""
+        multica_issue_id = str(existing.get("id") or "")
+        if not multica_issue_id:
+            return
+
+        status_name = str((source_status or {}).get("name") or "未提供")
+        lines = [
+            "## CodeArts 重新处理通知",
+            "",
+            f"- **华为云 Bug**：`#{codearts_issue_id}`",
+            f"- **当前状态**：{status_name}",
+        ]
+        if source_updated_time:
+            lines.append(f"- **华为云更新时间**：{source_updated_time}")
+        if latest_comment and latest_comment.get("comment"):
+            feedback = str(latest_comment.get("comment") or "").strip()[:4000]
+            lines.extend(["", "### 最新测试反馈", "", feedback])
+        lines.extend(["", "请继续在本任务中修复和验证，不要新建重复任务。"])
+
+        multica_bin = shutil.which("multica") or "multica"
+        temp_file = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".md") as fh:
+                fh.write("\n".join(lines))
+                temp_file = fh.name
+            subprocess.run(
+                [
+                    multica_bin,
+                    "issue",
+                    "comment",
+                    "add",
+                    multica_issue_id,
+                    "--content-file",
+                    temp_file,
+                    "--allow-external-file",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            status_category = str(existing.get("status_category") or existing.get("status") or "")
+            if str(existing.get("assignee_type") or "") == "agent":
+                # 运行中只追加反馈，避免产生并发重复 run；其他状态均续跑原任务。
+                if status_category != "in_progress":
+                    subprocess.run(
+                        [multica_bin, "issue", "rerun", multica_issue_id, "--output", "json"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+            elif status_category != "todo":
+                # 成员负责的任务回到其收件箱，仍然使用原卡片。
+                subprocess.run(
+                    [multica_bin, "issue", "status", multica_issue_id, "todo"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+        finally:
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
+
     def detect_platform(
         self,
         raw_issue: Optional[dict[str, Any]] = None,
@@ -376,6 +527,23 @@ class MulticaSync:
             logger.warning("multica CLI not found")
             return None
 
+        try:
+            existing = self.find_existing_issue(issue_id, known_multica_issue_id)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to sync CodeArts bug {issue_id} to Multica") from exc
+        if existing:
+            multica_issue_id = str(existing.get("id") or "")
+            if multica_issue_id and retrigger:
+                self._retrigger_existing_issue(
+                    existing,
+                    issue_id,
+                    source_status=source_status,
+                    latest_comment=latest_comment,
+                    source_updated_time=source_updated_time,
+                )
+                logger.info("Retriggered existing Multica issue %s for CodeArts bug %s", multica_issue_id, issue_id)
+            return multica_issue_id or None
+
         issue_title = f"【CodeArts Bug #{issue_id}】{title}"
         p_map = {"P0": "urgent", "P1": "high", "P2": "medium", "P3": "low", "P4": "low"}
         p_val = p_map.get(result.get("priority_suggestion", "P2"), "medium")
@@ -467,11 +635,12 @@ class MulticaSync:
             proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
             data = json.loads(proc.stdout)
             multica_issue_id = data.get("id")
+            if multica_issue_id:
+                self._set_codearts_metadata(multica_issue_id, issue_id)
             logger.info("Created Multica issue %s for CodeArts bug %s (assignee: %s)", multica_issue_id, issue_id, target_assignee)
             return multica_issue_id
         except Exception as e:
-            logger.warning("Failed to sync CodeArts bug %s to Multica: %s", issue_id, e)
-            return None
+            raise RuntimeError(f"Failed to create Multica issue for CodeArts bug {issue_id}") from e
         finally:
             if temp_file and os.path.exists(temp_file):
                 try:

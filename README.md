@@ -68,6 +68,17 @@ python main.py --once
 python main.py --loop
 ```
 
+## 测试打回后续跑原任务
+
+CodeArts Bug 与 Multica Issue 按 Bug ID 一对一绑定。巡检在创建前会查询包含已关闭任务在内的历史记录，因此同一个 Bug 不会重复建单。
+
+- 测试把 CodeArts 状态从「已解决」改回「新建」或「进行中」：下一轮巡检会在原 Multica Issue 追加打回通知，并通过 `multica issue rerun` 续跑原智能体任务。
+- 不修改状态：请在 CodeArts Bug 下新增一条评论，例如“测试未通过：仍可复现，步骤……”。巡检通过最新评论 ID 识别新反馈，同样续跑原任务。
+- 既不修改状态、正文，也不新增评论时，轮询端没有可观察到的新事件，因此不会重复触发。
+- 若原 Multica Issue 已在运行中，只追加最新反馈，不再并发启动第二个 run。
+
+执行 `--resolve` 后，程序会保存自身写回的状态快照，避免把自动改为「已解决」误判为测试打回。
+
 ## 默认保守写回
 
 - 开启 `WRITEBACK_ENABLED=true` 后，写回仅做两件事（与方案 §0 一致）：
