@@ -15,6 +15,24 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_PROJECT_MAPPING = {
+    "精准教学平台": {
+        "project": "edu-analytics-manager",
+        "assignee": "精准教学平台",
+        "agent": "精准教学平台",
+        "keywords": ["精准教学", "edu", "analytics"],
+    },
+    "青于蓝AI app": {
+        "project": "smart-study-cloud",
+        "assignee": "smart-study",
+        "agent": "smart-study",
+        "keywords": ["青于蓝ai app", "青于蓝aiapp", "qylapp", "/app/"],
+    },
+    "青于蓝AI管理后台": {
+        "project": "edu-analytics-manager",
+        "assignee": "精准教学平台",
+        "agent": "精准教学平台",
+        "keywords": ["管理后台", "smart-study", "smart_study", "39.162.18.244"],
+    },
     "商城业务平台": {
         "project": "trade-system-backend",
         "assignee": "trade-dev-agent",
@@ -34,14 +52,16 @@ DEFAULT_PROJECT_MAPPING = {
 
 
 def _load_local_mapping() -> Optional[dict[str, Any]]:
-    for filename in ("project_mapping.local.json", "project_mapping.json"):
-        p = Path(filename)
-        if p.exists():
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    for d in (Path.cwd(), repo_root):
+        for filename in ("project_mapping.local.json", "project_mapping.json"):
+            p = d / filename
+            if p.exists():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
     return None
 
 
