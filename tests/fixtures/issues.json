@@ -1,0 +1,21 @@
+{
+  "issues": [
+    {
+      "id": 101,
+      "name": "登录接口在高并发下偶发 500",
+      "severity": {"id": 2, "name": "严重"},
+      "priority": {"id": 2, "name": "中"},
+      "module": {"id": 1, "name": "auth"},
+      "status": {"id": 1, "name": "新建"},
+      "tracker": {"id": 3, "name": "Bug"},
+      "created_time": "2026-08-18 07:00:00",
+      "updated_time": "2026-08-18 08:00:00",
+      "assigned_user": {"id": 1, "name": "张三"}
+    }
+  ],
+  "details": {
+    "101": {
+      "description": "登录接口在并发 1000 时偶发 500，token 校验超时，涉及 userService.loginApi"
+    }
+  }
+}

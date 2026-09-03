@@ -1,0 +1,21 @@
+# 环境与敏感信息
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# 运行产物
+state.json
+state.json.tmp
+*.log
+
+# 本地规则（复制自 rules.example.yaml，含负责人映射，勿提交）
+rules.yaml

@@ -1,0 +1,79 @@
+"""环境变量配置。所有敏感信息只从环境变量读取，绝不写入代码或文档。"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+def _env_int_list(name: str, default: str) -> list[int]:
+    raw = os.getenv(name, default)
+    out = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part:
+            try:
+                out.append(int(part))
+            except ValueError:
+                pass
+    return out or [3]
+
+
+@dataclass
+class Config:
+    """从环境变量构建的运行配置。"""
+
+    project_id: str = field(default_factory=lambda: os.getenv("HW_PROJECT_ID", ""))
+    region: str = field(default_factory=lambda: os.getenv("HW_REGION", "cn-north-4"))
+
+    ak_read: str = field(default_factory=lambda: os.getenv("HW_AK_READ", ""))
+    sk_read: str = field(default_factory=lambda: os.getenv("HW_SK_READ", ""))
+    ak_write: str = field(default_factory=lambda: os.getenv("HW_AK_WRITE", ""))
+    sk_write: str = field(default_factory=lambda: os.getenv("HW_SK_WRITE", ""))
+
+    tracker_ids: list[int] = field(default_factory=lambda: _env_int_list("TRACKER_IDS", "3"))
+    poll_limit: int = field(default_factory=lambda: _env_int("POLL_LIMIT", 100))
+    poll_interval_seconds: int = field(default_factory=lambda: _env_int("POLL_INTERVAL_SECONDS", 300))
+    lookback_seconds: int = field(default_factory=lambda: _env_int("LOOKBACK_SECONDS", 60))
+
+    state_file: str = field(default_factory=lambda: os.getenv("STATE_FILE", "./state.json"))
+    rules_file: str = field(default_factory=lambda: os.getenv("RULES_FILE", "./rules.yaml"))
+    repo_local_path: str = field(default_factory=lambda: os.getenv("CODEARTS_REPO_LOCAL_PATH", ""))
+    # 单条连续失败达到该次数后放弃自动重试（转 poisoned），避免永久阻塞游标
+    max_error_attempts: int = field(
+        default_factory=lambda: max(1, _env_int("MAX_ERROR_ATTEMPTS", 5))
+    )
+
+    writeback_enabled: bool = field(default_factory=lambda: _env_bool("WRITEBACK_ENABLED", False))
+    triage_field_name: str = field(default_factory=lambda: os.getenv("TRIAGE_FIELD_NAME", "AI分诊"))
+    description_append: bool = field(default_factory=lambda: _env_bool("DESCRIPTION_APPEND", True))
+
+    auto_change_severity: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_SEVERITY", False))
+    auto_change_priority: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_PRIORITY", False))
+    auto_change_module: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_MODULE", False))
+    auto_change_assignee: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_ASSIGNEE", False))
+
+    @property
+    def has_read_credentials(self) -> bool:
+        return bool(self.project_id and self.ak_read and self.sk_read)
+
+    @property
+    def has_write_credentials(self) -> bool:
+        return bool(self.ak_write and self.sk_write)
