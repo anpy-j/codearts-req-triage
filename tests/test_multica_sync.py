@@ -12,6 +12,14 @@ from codearts_triage.multica_sync import MulticaSync
 
 
 class MulticaSyncTest(unittest.TestCase):
+    @staticmethod
+    def _issue_command(mock_run, verb):
+        return next(
+            call.args[0]
+            for call in mock_run.call_args_list
+            if len(call.args[0]) > 2 and call.args[0][1:3] == ["issue", verb]
+        )
+
     def test_disabled_by_default(self):
         sync = MulticaSync(enabled=False)
         self.assertFalse(sync.should_sync({"priority_suggestion": "P1"}))
@@ -71,7 +79,7 @@ class MulticaSyncTest(unittest.TestCase):
         )
         self.assertEqual(issue_id, "01a0-test-id")
         self.assertTrue(mock_run.called)
-        cmd = mock_run.call_args[0][0]
+        cmd = self._issue_command(mock_run, "create")
         self.assertIn("multica", cmd[0])
         self.assertIn("create", cmd)
         self.assertIn("--assignee-id", cmd)
@@ -85,7 +93,11 @@ class MulticaSyncTest(unittest.TestCase):
             description="<p>500错误</p>",
             result={"module": "auth", "priority_suggestion": "P2", "severity": "一般"},
         )
-        cmd_name = mock_run.call_args[0][0]
+        cmd_name = [
+            call.args[0]
+            for call in mock_run.call_args_list
+            if len(call.args[0]) > 2 and call.args[0][1:3] == ["issue", "create"]
+        ][-1]
         self.assertIn("--assignee", cmd_name)
         self.assertIn("dev_user1", cmd_name)
 
@@ -97,7 +109,18 @@ class MulticaSyncTest(unittest.TestCase):
         proc_list.stdout = json.dumps([{"id": "proj-uuid-1234-5678-9012-345678901234", "title": "trade-system-backend"}])
         proc_create = MagicMock()
         proc_create.stdout = json.dumps({"id": "new-issue-id"})
-        mock_run.side_effect = [proc_list, proc_create]
+        def fake_run(cmd, *args, **kwargs):
+            if cmd[1:3] == ["issue", "search"]:
+                return MagicMock(stdout=json.dumps({"issues": []}), returncode=0)
+            if cmd[1:3] == ["project", "list"]:
+                return proc_list
+            if cmd[1:3] in (["agent", "list"], ["member", "list"]):
+                return MagicMock(stdout="[]", returncode=0)
+            if cmd[1:3] == ["issue", "create"]:
+                return proc_create
+            return MagicMock(stdout="{}", returncode=0)
+
+        mock_run.side_effect = fake_run
 
         sync = MulticaSync(enabled=True, assignee_id="dev_user1", min_priority="P4")
         sync.sync_issue(
@@ -107,7 +130,7 @@ class MulticaSyncTest(unittest.TestCase):
             result={"module": "auth", "priority_suggestion": "P2"},
             multica_project="trade-system-backend",
         )
-        cmd = mock_run.call_args[0][0]
+        cmd = self._issue_command(mock_run, "create")
         self.assertIn("--project", cmd)
         self.assertIn("proj-uuid-1234-5678-9012-345678901234", cmd)
 
@@ -148,7 +171,7 @@ class MulticaSyncTest(unittest.TestCase):
             result={"module": "other", "priority_suggestion": "P2"},
             raw_module={"name": "trade-service"},
         )
-        cmd_trade = mock_run.call_args[0][0]
+        cmd_trade = self._issue_command(mock_run, "create")
         self.assertIn("--project", cmd_trade)
         self.assertIn("uuid-trade-proj-1234-5678-9012-345678901234", cmd_trade)
         self.assertIn("--assignee", cmd_trade)
@@ -161,7 +184,11 @@ class MulticaSyncTest(unittest.TestCase):
             description="fail",
             result={"module": "other", "priority_suggestion": "P2"},
         )
-        cmd_app = mock_run.call_args[0][0]
+        cmd_app = [
+            call.args[0]
+            for call in mock_run.call_args_list
+            if len(call.args[0]) > 2 and call.args[0][1:3] == ["issue", "create"]
+        ][-1]
         self.assertIn("--project", cmd_app)
         self.assertIn("uuid-app-proj-1234-5678-9012-345678901234", cmd_app)
         self.assertIn("--assignee", cmd_app)
@@ -181,7 +208,11 @@ class MulticaSyncTest(unittest.TestCase):
             description="inbox test",
             result={"module": "other", "priority_suggestion": "P2"},
         )
-        cmd_inbox = mock_run.call_args[0][0]
+        cmd_inbox = [
+            call.args[0]
+            for call in mock_run.call_args_list
+            if len(call.args[0]) > 2 and call.args[0][1:3] == ["issue", "create"]
+        ][-1]
         self.assertIn("--assignee", cmd_inbox)
         self.assertIn("default-user", cmd_inbox)
 
@@ -283,7 +314,7 @@ class MulticaSyncTest(unittest.TestCase):
             test_branch="test-cloud",
         )
 
-        cmd = mock_run.call_args[0][0]
+        cmd = self._issue_command(mock_run, "create")
         desc_file_idx = cmd.index("--description-file") + 1
         desc_file_path = cmd[desc_file_idx]
 
@@ -294,6 +325,105 @@ class MulticaSyncTest(unittest.TestCase):
         self.assertIn("git_flow.py -b test-cloud", content)
         self.assertIn("--hw-project a1b2c3d4e5f678901234567890abcdef --resolve 888999", content)
         self.assertIn("in_review", content)
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_reopened_bug_reuses_and_reruns_existing_agent_issue(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/local/bin/multica"
+
+        def fake_run(cmd, *args, **kwargs):
+            proc = MagicMock(returncode=0, stdout="{}")
+            if cmd[1:3] == ["issue", "search"]:
+                proc.stdout = json.dumps({
+                    "issues": [{
+                        "id": "existing-issue-id",
+                        "title": "【CodeArts Bug #123】登录失败",
+                        "status_category": "in_review",
+                        "assignee_type": "agent",
+                        "created_at": "2026-09-01T00:00:00Z",
+                    }]
+                })
+            return proc
+
+        mock_run.side_effect = fake_run
+        sync = MulticaSync(enabled=True)
+        issue_id = sync.sync_issue(
+            issue_id=123,
+            title="登录失败",
+            description="测试打回",
+            result={"module": "auth", "priority_suggestion": "P1"},
+            retrigger=True,
+            source_status={"id": 1, "name": "新建"},
+            latest_comment={"id": "c2", "comment": "测试未通过，请重新修复"},
+        )
+
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        self.assertEqual(issue_id, "existing-issue-id")
+        self.assertFalse(any(cmd[1:3] == ["issue", "create"] for cmd in commands))
+        self.assertTrue(any(cmd[1:4] == ["issue", "comment", "add"] for cmd in commands))
+        self.assertTrue(any(cmd[1:3] == ["issue", "rerun"] for cmd in commands))
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_existing_issue_is_not_rerun_without_new_feedback(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/local/bin/multica"
+        proc = MagicMock()
+        proc.stdout = json.dumps({
+            "id": "existing-issue-id",
+            "title": "【CodeArts Bug #123】登录失败",
+            "status_category": "in_review",
+            "assignee_type": "agent",
+        })
+        mock_run.return_value = proc
+
+        sync = MulticaSync(enabled=True)
+        issue_id = sync.sync_issue(
+            issue_id=123,
+            title="登录失败",
+            description="原描述",
+            result={"module": "auth", "priority_suggestion": "P1"},
+            known_multica_issue_id="existing-issue-id",
+            retrigger=False,
+        )
+
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        self.assertEqual(issue_id, "existing-issue-id")
+        self.assertFalse(any(cmd[1:3] == ["issue", "create"] for cmd in commands))
+        self.assertFalse(any(cmd[1:3] == ["issue", "rerun"] for cmd in commands))
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_reopened_member_issue_returns_to_same_inbox_card(self, mock_which, mock_run):
+        mock_which.return_value = "/usr/local/bin/multica"
+
+        def fake_run(cmd, *args, **kwargs):
+            proc = MagicMock(returncode=0, stdout="{}")
+            if cmd[1:3] == ["issue", "get"]:
+                proc.stdout = json.dumps({
+                    "id": "existing-member-issue",
+                    "title": "【CodeArts Bug #456】查询异常",
+                    "status_category": "in_review",
+                    "assignee_type": "member",
+                })
+            return proc
+
+        mock_run.side_effect = fake_run
+        sync = MulticaSync(enabled=True)
+        issue_id = sync.sync_issue(
+            issue_id=456,
+            title="查询异常",
+            description="测试打回",
+            result={"module": "other", "priority_suggestion": "P2"},
+            known_multica_issue_id="existing-member-issue",
+            retrigger=True,
+            source_status={"id": 1, "name": "新建"},
+        )
+
+        commands = [call.args[0] for call in mock_run.call_args_list]
+        self.assertEqual(issue_id, "existing-member-issue")
+        self.assertFalse(any(cmd[1:3] == ["issue", "create"] for cmd in commands))
+        self.assertFalse(any(cmd[1:3] == ["issue", "rerun"] for cmd in commands))
+        self.assertTrue(any(cmd[1:3] == ["issue", "status"] and cmd[-1] == "todo" for cmd in commands))
 
 
 if __name__ == "__main__":
