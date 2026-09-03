@@ -45,6 +45,26 @@ class StateTest(unittest.TestCase):
         self.assertTrue(s.needs_retriage(1, "t2"))  # updated_time 变化 → 重新分诊
         self.assertTrue(s.needs_retriage(99, "t1"))  # 未处理
 
+    def test_multica_mapping_and_source_snapshot_survive_updates(self):
+        s = State(self.path)
+        s.mark_processed(
+            42,
+            "t1",
+            "hash1",
+            multica_issue_id="multica-issue-42",
+            source_status_id=3,
+            source_comment_id="comment-1",
+        )
+        s.mark_processed(42, "t2", "hash2")
+        self.assertEqual(s.get_multica_issue_id(42), "multica-issue-42")
+        self.assertEqual(s.get_source_status_id(42), 3)
+        self.assertEqual(s.get_source_comment_id(42), "comment-1")
+
+        s.update_source_snapshot(42, updated_time="t3", source_status_id=1, source_comment_id="comment-2")
+        self.assertEqual(s.get_processed_updated_time(42), "t3")
+        self.assertEqual(s.get_source_status_id(42), 1)
+        self.assertEqual(s.get_source_comment_id(42), "comment-2")
+
     def test_clear_error(self):
         s = State(self.path)
         s.record_error(5, "err")

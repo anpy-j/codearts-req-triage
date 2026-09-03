@@ -105,6 +105,8 @@ class Config:
     multica_project: str = field(default_factory=lambda: os.getenv("MULTICA_PROJECT", ""))
     # 模块/系统 -> Multica 项目及负责人路由映射
     multica_project_mapping: dict[str, dict[str, str]] = field(default_factory=lambda: _env_json_dict("MULTICA_PROJECT_MAPPING"))
+    # 是否直接指派给对应智能体并触发任务（默认 False：存入成员 Multica 收件箱，静默待命，不直接启动智能体任务）
+    multica_auto_assign_agent: bool = field(default_factory=lambda: _env_bool("MULTICA_AUTO_ASSIGN_AGENT", False))
     # 修复完成后的目标测试合流分支（如 test-cloud，可在命令行或定时任务动态指定）
     test_branch: str = field(default_factory=lambda: os.getenv("TEST_BRANCH", "test-cloud"))
 

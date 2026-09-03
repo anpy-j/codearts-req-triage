@@ -4,7 +4,7 @@ import sys
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -488,6 +488,71 @@ class TriagePipelineTest(unittest.TestCase):
             # 第三轮不再重新分诊（needs_retriage=False）
             summary3 = pipeline.run_once()
             self.assertEqual(summary3["skipped"], 1)
+
+    def test_reopened_status_retriggers_same_multica_issue(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(1, "登录超时", updated="2026-08-18 08:00:00")
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(issues=[issue])
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            pipeline.run_once()
+            state.mark_processed(
+                1,
+                "2026-08-18 08:00:00",
+                state.get_triage_hash(1),
+                multica_issue_id="multica-1",
+                source_status_id=3,
+            )
+
+            client.issues[0]["updated_time"] = "2026-08-18 09:00:00"
+            client.issues[0]["status"] = {"id": 1, "name": "新建"}
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-1")
+
+            summary = pipeline.run_once()
+
+            self.assertEqual(summary["written"], 1)
+            pipeline.multica_sync.sync_issue.assert_called_once()
+            kwargs = pipeline.multica_sync.sync_issue.call_args.kwargs
+            self.assertEqual(kwargs["known_multica_issue_id"], "multica-1")
+            self.assertTrue(kwargs["retrigger"])
+
+    def test_new_test_comment_retriggers_without_status_change(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(1, "登录超时", updated="2026-08-18 08:00:00")
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(
+                issues=[issue],
+                details={1: {"comments": [{"id": "c1", "created_time": "2026-08-18 08:00:00", "comment": "待验证"}]}}
+            )
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            pipeline.run_once()
+            state.mark_processed(
+                1,
+                "2026-08-18 08:00:00",
+                state.get_triage_hash(1),
+                multica_issue_id="multica-1",
+                source_status_id=3,
+                source_comment_id="c1",
+            )
+
+            client.issues[0]["updated_time"] = "2026-08-18 09:00:00"
+            client.details[1]["comments"].append(
+                {"id": "c2", "created_time": "2026-08-18 09:00:00", "comment": "测试未通过，请重新修改"}
+            )
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-1")
+
+            summary = pipeline.run_once()
+
+            self.assertEqual(summary["written"], 1)
+            kwargs = pipeline.multica_sync.sync_issue.call_args.kwargs
+            self.assertTrue(kwargs["retrigger"])
+            self.assertEqual(kwargs["latest_comment"]["id"], "c2")
 
 
 if __name__ == "__main__":

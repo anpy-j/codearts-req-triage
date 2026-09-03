@@ -291,7 +291,7 @@ class FakeClient:
 
     def list_comments(self, issue_id, limit=100, offset=0):
         self.calls.append(f"list_comments:{issue_id}")
-        return []
+        return list(self.details.get(issue_id, {}).get("comments", []))[offset : offset + limit]
 
     def list_associated_commits(self, issue_id, limit=50, offset=0):
         self.calls.append(f"associated_commits:{issue_id}")

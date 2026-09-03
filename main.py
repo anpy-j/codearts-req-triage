@@ -69,6 +69,7 @@ def main() -> int:
     parser.add_argument("--multica-project", default=None, help="Multica 归属项目名称或 ID（如 buyer-app-service, trade-system-backend）")
     parser.add_argument("--project-mapping", default=None, help="模块/系统到 Multica 项目与指派人的映射（JSON 或 key:project:assignee,...）")
     parser.add_argument("--test-branch", "--target-branch", dest="test_branch", default=None, help="目标测试合并分支名称（如 test-cloud，默认: test-cloud）")
+    parser.add_argument("--auto-assign-agent", action="store_true", help="是否直接指派给对应智能体并立即触发任务（默认存入成员收件箱，不直接触发任务）")
     parser.add_argument("--resolve", type=int, default=None, help="将指定华为云缺陷 ID 标记为「已解决」(status_id=3)")
     parser.add_argument("--set-status", nargs=2, metavar=("ISSUE_ID", "STATUS_ID"), type=int, default=None, help="修改指定华为云缺陷状态")
     args = parser.parse_args()
@@ -101,6 +102,8 @@ def main() -> int:
         cfg.multica_sync_handlers = [h.strip() for h in args.handlers.split(",") if h.strip()]
     if args.assignee is not None:
         cfg.multica_assignee_id = args.assignee.strip()
+    if args.auto_assign_agent:
+        cfg.multica_auto_assign_agent = True
 
     if args.resolve:
         ak = cfg.ak_write or cfg.ak_read
@@ -109,6 +112,35 @@ def main() -> int:
         client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
         try:
             client.update_status(args.resolve, status_id=3)
+            # 记录本程序主动回写的状态，避免下一轮把“已解决”误判为测试打回。
+            try:
+                from codearts_triage.state import State
+
+                detail = client.show_issue(args.resolve)
+                comments = client.list_comments(args.resolve)
+                latest_comment = max(
+                    comments,
+                    key=lambda item: (
+                        str(item.get("created_time") or ""),
+                        str(item.get("id") or ""),
+                    ),
+                    default=None,
+                )
+                source_comment_id = (
+                    str(latest_comment.get("id"))
+                    if latest_comment and latest_comment.get("id") is not None
+                    else None
+                )
+                state = State(cfg.state_file)
+                state.update_source_snapshot(
+                    args.resolve,
+                    updated_time=detail.get("updated_time"),
+                    source_status_id=3,
+                    source_comment_id=source_comment_id,
+                )
+                state.save()
+            except Exception as snapshot_exc:
+                logging.warning("华为云状态已更新，但本地防重快照记录失败: %s", snapshot_exc)
             print(f"成功将华为云 Bug #{args.resolve} 状态更新为「已解决」 (status_id=3)")
             return 0
         except Exception as e:

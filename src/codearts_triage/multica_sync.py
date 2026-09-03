@@ -54,13 +54,15 @@ def parse_project_mapping(raw: Any) -> dict[str, dict[str, Any]]:
         for k, v in raw.items():
             k_clean = str(k).strip()
             if isinstance(v, dict):
+                agent_val = str(v.get("agent") or v.get("assignee") or "").strip() or None
                 res[k_clean] = {
                     "project": str(v.get("project", "")).strip(),
-                    "assignee": str(v.get("assignee", "")).strip() if v.get("assignee") else None,
+                    "assignee": agent_val,
+                    "agent": agent_val,
                     "keywords": v.get("keywords", []),
                 }
             elif isinstance(v, str):
-                res[k_clean] = {"project": str(v).strip(), "assignee": None, "keywords": []}
+                res[k_clean] = {"project": str(v).strip(), "assignee": None, "agent": None, "keywords": []}
         return res
     if isinstance(raw, str):
         raw = raw.strip()
@@ -77,9 +79,9 @@ def parse_project_mapping(raw: Any) -> dict[str, dict[str, Any]]:
         for item in items:
             parts = [p.strip() for p in item.split(":") if p.strip()]
             if len(parts) >= 3:
-                res[parts[0]] = {"project": parts[1], "assignee": parts[2], "keywords": []}
+                res[parts[0]] = {"project": parts[1], "assignee": parts[2], "agent": parts[2], "keywords": []}
             elif len(parts) == 2:
-                res[parts[0]] = {"project": parts[1], "assignee": None, "keywords": []}
+                res[parts[0]] = {"project": parts[1], "assignee": None, "agent": None, "keywords": []}
         return res
     return {}
 
@@ -96,6 +98,7 @@ class MulticaSync:
         handler_mapping: Optional[dict[str, str]] = None,
         multica_project: Optional[str] = None,
         project_mapping: Optional[Any] = None,
+        auto_assign_agent: bool = False,
     ):
         self.enabled = enabled
         self.assignee_id = assignee_id
@@ -103,6 +106,7 @@ class MulticaSync:
         self.sync_handlers = [h.strip().lower() for h in (sync_handlers or []) if h.strip()]
         self.handler_mapping = {k.strip().lower(): str(v).strip() for k, v in (handler_mapping or {}).items()}
         self.multica_project = multica_project
+        self.auto_assign_agent = auto_assign_agent
         parsed_mapping = parse_project_mapping(project_mapping)
         if not parsed_mapping:
             parsed_mapping = parse_project_mapping(_load_local_mapping())
@@ -264,6 +268,19 @@ class MulticaSync:
 
         return None
 
+    def resolve_recommended_agent(self, detected_platform: Optional[str]) -> Optional[str]:
+        if not detected_platform or not self.project_mapping:
+            return None
+        conf = self.project_mapping.get(detected_platform)
+        if isinstance(conf, dict):
+            return conf.get("agent") or conf.get("assignee")
+        d_lower = detected_platform.lower()
+        for key, c in self.project_mapping.items():
+            if key.lower() == d_lower or key.lower() in d_lower or d_lower in key.lower():
+                if isinstance(c, dict):
+                    return c.get("agent") or c.get("assignee")
+        return None
+
     def resolve_target(
         self,
         raw_issue: Optional[dict[str, Any]] = None,
@@ -279,6 +296,17 @@ class MulticaSync:
 
         mapping = self.project_mapping
 
+        def _apply_conf(conf: dict[str, Any]):
+            nonlocal target_project, target_assignee
+            if conf.get("project"):
+                target_project = conf["project"]
+            agent_or_assignee = conf.get("agent") or conf.get("assignee")
+            if agent_or_assignee:
+                if self.auto_assign_agent:
+                    target_assignee = agent_or_assignee
+                elif not self.assignee_id and conf.get("assignee"):
+                    target_assignee = conf["assignee"]
+
         # 1. 优先根据三层规则探测平台
         detected = self.detect_platform(raw_issue=raw_issue, title=title, description=description)
 
@@ -286,10 +314,7 @@ class MulticaSync:
         if detected and detected in mapping:
             conf = mapping[detected]
             if isinstance(conf, dict):
-                if conf.get("project"):
-                    target_project = conf["project"]
-                if conf.get("assignee"):
-                    target_assignee = conf["assignee"]
+                _apply_conf(conf)
             return target_project, target_assignee, detected
 
         # 3. 兜底模糊匹配平台名称
@@ -298,10 +323,7 @@ class MulticaSync:
             for key, conf in mapping.items():
                 if key.lower() in d_lower or d_lower in key.lower():
                     if isinstance(conf, dict):
-                        if conf.get("project"):
-                            target_project = conf["project"]
-                        if conf.get("assignee"):
-                            target_assignee = conf["assignee"]
+                        _apply_conf(conf)
                     return target_project, target_assignee, detected
 
         # 4. 兜底匹配 module_name 和 title 关键字
@@ -322,10 +344,7 @@ class MulticaSync:
                         k_lower = key.lower()
                         keywords = conf.get("keywords", [])
                         if k_lower in target_str or any(kw.lower() in target_str for kw in keywords):
-                            if conf.get("project"):
-                                target_project = conf["project"]
-                            if conf.get("assignee"):
-                                target_assignee = conf["assignee"]
+                            _apply_conf(conf)
                             return target_project, target_assignee, key
 
         return target_project, target_assignee, detected
@@ -343,6 +362,11 @@ class MulticaSync:
         project_id: Optional[str] = None,
         region: Optional[str] = None,
         test_branch: Optional[str] = None,
+        known_multica_issue_id: Optional[str] = None,
+        retrigger: bool = False,
+        source_status: Optional[dict[str, Any]] = None,
+        latest_comment: Optional[dict[str, Any]] = None,
+        source_updated_time: Optional[str] = None,
     ) -> Optional[str]:
         if not self.should_sync(result, assigned_user):
             return None
@@ -375,10 +399,13 @@ class MulticaSync:
             assigned_user=assigned_user,
             override_project=multica_project,
         )
+        recommended_agent = self.resolve_recommended_agent(detected_platform)
         if detected_platform:
             desc_lines.append(f"- **识别所属平台**：`{detected_platform}`")
         if target_project_name:
             desc_lines.append(f"- **归属项目**：`{target_project_name}`")
+        if recommended_agent:
+            desc_lines.append(f"- **推荐排查智能体**：🤖 `{recommended_agent}`")
         if target_test_branch:
             desc_lines.append(f"- **目标测试分支**：`{target_test_branch}`")
         if result.get("assignee_suggestion"):

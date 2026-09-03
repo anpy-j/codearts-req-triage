@@ -7,12 +7,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from .client import F_DESCRIPTION, F_ID, F_MODULE, F_NAME, F_SEVERITY, F_UPDATED_TIME
+from .client import F_DESCRIPTION, F_ID, F_MODULE, F_NAME, F_SEVERITY, F_STATUS, F_UPDATED_TIME
 from .code_search import merge_code_hints, search_commits_in_repo, search_in_repo
 from .config import Config
 from .rules import Rules
 from .state import State
-from .writeback import WriteBack, triage_hash
+from .writeback import WriteBack, strip_old_triage_block, triage_hash
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ class TriagePipeline:
             handler_mapping=getattr(config, "multica_handler_mapping", None),
             multica_project=getattr(config, "multica_project", None),
             project_mapping=getattr(config, "multica_project_mapping", None),
+            auto_assign_agent=getattr(config, "multica_auto_assign_agent", False),
         )
 
     # ---- 拉取 ----
@@ -130,7 +131,15 @@ class TriagePipeline:
         issue_id = issue[F_ID]
         detail = self.client.show_issue(issue_id)
         title = detail.get(F_NAME) or ""
-        description = detail.get(F_DESCRIPTION) or ""
+        raw_description = detail.get(F_DESCRIPTION) or ""
+        # 自己追加的分诊块不能再次进入规则引擎，否则会造成 hash 漂移和重复触发。
+        description = strip_old_triage_block(raw_description)
+        detail["_source_description"] = description
+        try:
+            detail["_comments"] = self.client.list_comments(issue_id)
+        except Exception as exc:  # 评论是重触发增强信息，读取失败不应阻断主分诊。
+            logger.warning("failed to list comments for issue %s: %s", issue_id, exc)
+            detail["_comments"] = []
         severity = (detail.get(F_SEVERITY) or {}).get("name")
         module = detail.get(F_MODULE) or {}
         module_name = (module or {}).get("name")
@@ -170,6 +179,40 @@ class TriagePipeline:
             }
         )
         return detail, result
+
+    @staticmethod
+    def _latest_comment(detail: dict[str, Any]) -> Optional[dict[str, Any]]:
+        comments = detail.get("_comments") or []
+        if not comments:
+            return None
+        return max(
+            comments,
+            key=lambda item: (
+                str(item.get("created_time") or ""),
+                str(item.get("id") or ""),
+            ),
+        )
+
+    def _should_retrigger(
+        self,
+        issue_id: int,
+        current_hash: str,
+        source_status_id: Optional[int],
+        source_comment_id: Optional[str],
+    ) -> bool:
+        """已同步 Bug 的正文/测试反馈变化，或回到开放态时，重新运行原任务。"""
+        if not self.state.is_processed(issue_id):
+            return False
+        if self.state.get_triage_hash(issue_id) != current_hash:
+            return True
+        if source_comment_id and self.state.get_source_comment_id(issue_id) != source_comment_id:
+            return True
+        if (
+            source_status_id in (1, 2)
+            and self.state.get_source_status_id(issue_id) != source_status_id
+        ):
+            return True
+        return False
 
     @staticmethod
     def _summarize(title: str, module: str, priority: str) -> str:
@@ -216,16 +259,76 @@ class TriagePipeline:
                 logger.info("issue %s changed or errored, re-triaging", issue_id)
 
             try:
+                was_processed = self.state.is_processed(issue_id)
                 detail, result = self.triage_with_retry(issue)
                 summary["triaged"] += 1
                 h = triage_hash(result)
+                source_status = detail.get(F_STATUS) or {}
+                source_status_id = source_status.get("id") if isinstance(source_status, dict) else None
+                latest_comment = self._latest_comment(detail)
+                source_comment_id = (
+                    str(latest_comment.get("id"))
+                    if latest_comment and latest_comment.get("id") is not None
+                    else None
+                )
+                known_multica_id = self.state.get_multica_issue_id(issue_id)
+                should_retrigger = self._should_retrigger(
+                    issue_id,
+                    h,
+                    source_status_id,
+                    source_comment_id,
+                )
 
                 # 幂等：结果未变且无未清错误 → 跳过写回，但仍需刷新 stored updated_time，
                 # 否则 needs_retriage 永远为 True → 每轮重复分诊（livelock）
                 if self.state.get_triage_hash(issue_id) == h and not self.state.has_error(issue_id):
-                    summary["skipped"] += 1
+                    actions: list[str] = []
+                    multica_id = known_multica_id
+                    if should_retrigger and self.multica_sync and self.multica_sync.enabled:
+                        if persist:
+                            multica_id = self.multica_sync.sync_issue(
+                                issue_id=issue_id,
+                                title=detail.get("name", ""),
+                                description=detail.get("_source_description", ""),
+                                result=result,
+                                assigned_user=detail.get("assigned_user"),
+                                raw_module=detail.get("module"),
+                                raw_issue=detail,
+                                multica_project=getattr(self.config, "multica_project", None),
+                                project_id=self.config.project_id,
+                                region=self.config.region,
+                                test_branch=getattr(self.config, "test_branch", "test-cloud"),
+                                known_multica_issue_id=known_multica_id,
+                                retrigger=True,
+                                source_status=source_status,
+                                latest_comment=latest_comment,
+                                source_updated_time=updated_time,
+                            )
+                            if multica_id:
+                                actions.append(f"retriggered existing Multica issue {multica_id}")
+                        else:
+                            actions.append("[dry-run] would append feedback and rerun the existing Multica issue")
+
+                    if actions:
+                        summary["written"] += 1
+                        summary["details"].append({
+                            "issue_id": issue_id,
+                            "actions": actions,
+                            "result": result,
+                            "title": detail.get("name"),
+                            "description": detail.get("_source_description"),
+                        })
+                    else:
+                        summary["skipped"] += 1
                     if persist and updated_time:
-                        self.state.mark_processed(issue_id, updated_time, h)
+                        self.state.mark_processed(
+                            issue_id,
+                            updated_time,
+                            h,
+                            multica_issue_id=multica_id,
+                            source_status_id=source_status_id,
+                            source_comment_id=source_comment_id,
+                        )
                         self.state.clear_error(issue_id)
                         if latest_updated is None or updated_time > latest_updated:
                             latest_updated = updated_time
@@ -233,15 +336,12 @@ class TriagePipeline:
 
                 if persist:
                     actions = self.writeback.apply(detail, result, dry_run=False)
-                    self.state.mark_processed(issue_id, updated_time, h)
-                    self.state.clear_error(issue_id)
-                    if updated_time and (latest_updated is None or updated_time > latest_updated):
-                        latest_updated = updated_time
+                    multica_id = known_multica_id
                     if self.multica_sync and self.multica_sync.enabled:
                         multica_id = self.multica_sync.sync_issue(
                             issue_id=issue_id,
                             title=detail.get("name", ""),
-                            description=detail.get("description", ""),
+                            description=detail.get("_source_description", ""),
                             result=result,
                             assigned_user=detail.get("assigned_user"),
                             raw_module=detail.get("module"),
@@ -250,9 +350,26 @@ class TriagePipeline:
                             project_id=self.config.project_id,
                             region=self.config.region,
                             test_branch=getattr(self.config, "test_branch", "test-cloud"),
+                            known_multica_issue_id=known_multica_id,
+                            retrigger=was_processed,
+                            source_status=source_status,
+                            latest_comment=latest_comment,
+                            source_updated_time=updated_time,
                         )
                         if multica_id:
-                            actions.append(f"synced to Multica inbox (issue {multica_id})")
+                            verb = "reused/retriggered" if was_processed else "synced/reused"
+                            actions.append(f"{verb} Multica issue {multica_id}")
+                    self.state.mark_processed(
+                        issue_id,
+                        updated_time,
+                        h,
+                        multica_issue_id=multica_id,
+                        source_status_id=source_status_id,
+                        source_comment_id=source_comment_id,
+                    )
+                    self.state.clear_error(issue_id)
+                    if updated_time and (latest_updated is None or updated_time > latest_updated):
+                        latest_updated = updated_time
                 else:
                     actions = self.writeback.apply(detail, result, dry_run=True)
                     if getattr(self.config, "multica_sync_enabled", False):
@@ -260,7 +377,7 @@ class TriagePipeline:
                             raw_issue=detail,
                             module_name=detail.get("module") or result.get("module"),
                             title=detail.get("name"),
-                            description=detail.get("description"),
+                            description=detail.get("_source_description"),
                             assigned_user=detail.get("assigned_user"),
                             override_project=getattr(self.config, "multica_project", None),
                         )
@@ -271,7 +388,7 @@ class TriagePipeline:
                     "actions": actions,
                     "result": result,
                     "title": detail.get("name"),
-                    "description": detail.get("description"),
+                    "description": detail.get("_source_description"),
                 })
             except Exception as exc:  # noqa: BLE001 — 单条失败不中断整轮
                 logger.exception("triage failed for issue %s: %s", issue_id, exc)

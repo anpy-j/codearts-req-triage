@@ -64,11 +64,57 @@ class State:
             return None
         return rec.get("updated_time")
 
-    def mark_processed(self, issue_id: int, updated_time: Optional[str], triage_hash: Optional[str] = None) -> None:
-        self._data["processed"][str(issue_id)] = {
-            "updated_time": updated_time,
-            "triage_hash": triage_hash,
-        }
+    def mark_processed(
+        self,
+        issue_id: int,
+        updated_time: Optional[str],
+        triage_hash: Optional[str] = None,
+        multica_issue_id: Optional[str] = None,
+        source_status_id: Optional[int] = None,
+        source_comment_id: Optional[str] = None,
+    ) -> None:
+        """记录处理快照，并保留同一 CodeArts Bug 对应的 Multica Issue 映射。"""
+        key = str(issue_id)
+        rec = dict(self._data["processed"].get(key) or {})
+        rec.update({"updated_time": updated_time, "triage_hash": triage_hash})
+        if multica_issue_id:
+            rec["multica_issue_id"] = multica_issue_id
+        if source_status_id is not None:
+            rec["source_status_id"] = source_status_id
+        if source_comment_id is not None:
+            rec["source_comment_id"] = str(source_comment_id)
+        self._data["processed"][key] = rec
+
+    def get_multica_issue_id(self, issue_id: int) -> Optional[str]:
+        rec = self._data["processed"].get(str(issue_id)) or {}
+        return rec.get("multica_issue_id")
+
+    def get_source_status_id(self, issue_id: int) -> Optional[int]:
+        rec = self._data["processed"].get(str(issue_id)) or {}
+        return rec.get("source_status_id")
+
+    def get_source_comment_id(self, issue_id: int) -> Optional[str]:
+        rec = self._data["processed"].get(str(issue_id)) or {}
+        value = rec.get("source_comment_id")
+        return str(value) if value is not None else None
+
+    def update_source_snapshot(
+        self,
+        issue_id: int,
+        updated_time: Optional[str] = None,
+        source_status_id: Optional[int] = None,
+        source_comment_id: Optional[str] = None,
+    ) -> None:
+        """记录由本程序主动产生的 CodeArts 变更，防止下一轮误判为测试打回。"""
+        key = str(issue_id)
+        rec = dict(self._data["processed"].get(key) or {})
+        if updated_time is not None:
+            rec["updated_time"] = updated_time
+        if source_status_id is not None:
+            rec["source_status_id"] = source_status_id
+        if source_comment_id is not None:
+            rec["source_comment_id"] = str(source_comment_id)
+        self._data["processed"][key] = rec
 
     def needs_retriage(self, issue_id: int, updated_time: Optional[str]) -> bool:
         """已处理但 updated_time 变化 → 需要重新分诊。"""

@@ -137,6 +137,7 @@ class MulticaSyncTest(unittest.TestCase):
             assignee_id="default-user",
             min_priority="P4",
             project_mapping=mapping_str,
+            auto_assign_agent=True,
         )
 
         # 1. 命中 trade 模块
@@ -165,6 +166,24 @@ class MulticaSyncTest(unittest.TestCase):
         self.assertIn("uuid-app-proj-1234-5678-9012-345678901234", cmd_app)
         self.assertIn("--assignee", cmd_app)
         self.assertIn("app-dev-agent", cmd_app)
+
+        # 3. 默认收件箱模式（auto_assign_agent=False）：指派给 default-user
+        sync_inbox = MulticaSync(
+            enabled=True,
+            assignee_id="default-user",
+            min_priority="P4",
+            project_mapping=mapping_str,
+            auto_assign_agent=False,
+        )
+        sync_inbox.sync_issue(
+            issue_id=203,
+            title="【app】测试收件箱模式",
+            description="inbox test",
+            result={"module": "other", "priority_suggestion": "P2"},
+        )
+        cmd_inbox = mock_run.call_args[0][0]
+        self.assertIn("--assignee", cmd_inbox)
+        self.assertIn("default-user", cmd_inbox)
 
     def test_detect_platform_3_tiers(self):
         test_mapping = {
