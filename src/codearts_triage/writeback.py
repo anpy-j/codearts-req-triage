@@ -14,10 +14,27 @@ import json
 import logging
 from typing import Any, Optional
 
+import re
+
 logger = logging.getLogger(__name__)
 
 TRIAGE_MARKER_START = "<!-- AI-TRIAGE -->"
 TRIAGE_MARKER_END = "<!-- /AI-TRIAGE -->"
+
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U00010000-\U0010FFFF"  # 4 字节 Unicode 表情符号（华为云 CodeArts Req 抛 PM.02101004 不支持）
+    "\uD800-\uDFFF"          # 孤立代理项
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def sanitize_req_text(text: str) -> str:
+    """清理华为云 CodeArts Req 不支持的字符（如 4 字节 Unicode Emoji 表情 🤖 等）。"""
+    if not text:
+        return text
+    return EMOJI_PATTERN.sub("", text)
 
 
 def triage_hash(result: dict[str, Any]) -> str:
@@ -34,7 +51,7 @@ def triage_hash(result: dict[str, Any]) -> str:
 def build_triage_json(result: dict[str, Any]) -> str:
     """自定义字段内容：一行 JSON（与 triage_hash 使用同一稳定投影，含 triaged_at 除外）。"""
     stable = {k: v for k, v in result.items() if k not in ("triaged_at",)}
-    return json.dumps(stable, ensure_ascii=False, sort_keys=True)
+    return sanitize_req_text(json.dumps(stable, ensure_ascii=False, sort_keys=True))
 
 
 def build_description_block(result: dict[str, Any]) -> str:
@@ -42,7 +59,7 @@ def build_description_block(result: dict[str, Any]) -> str:
     lines = [
         "",
         TRIAGE_MARKER_START,
-        "## 🤖 AI 分诊摘要",
+        "## AI 分诊摘要",
         f"- 模块：{result.get('module', 'other')}",
         f"- 优先级建议：{result.get('priority_suggestion', 'P2')}",
     ]
@@ -62,7 +79,7 @@ def build_description_block(result: dict[str, Any]) -> str:
                 lines.append(f"  - commit `{h.get('commit_short_id') or h.get('commit')}` {h.get('commit_msg', '')[:60]}")
     lines.append(f"- 说明：自动化分诊生成，仅供参考（规则 v{result.get('rule_version', '?')}）")
     lines.append(TRIAGE_MARKER_END)
-    return "\n".join(lines)
+    return sanitize_req_text("\n".join(lines))
 
 
 def strip_old_triage_block(description: Optional[str]) -> str:
@@ -73,6 +90,14 @@ def strip_old_triage_block(description: Optional[str]) -> str:
     end = description.find(TRIAGE_MARKER_END)
     if start != -1 and end != -1 and end > start:
         return (description[:start] + description[end + len(TRIAGE_MARKER_END) :]).rstrip()
+    header_idx = description.find("## AI 分诊摘要")
+    if header_idx != -1:
+        footer_idx = description.find("- 说明：自动化分诊生成", header_idx)
+        if footer_idx != -1:
+            next_newline = description.find("\n", footer_idx)
+            end_idx = next_newline if next_newline != -1 else len(description)
+            return (description[:header_idx] + description[end_idx:]).rstrip()
+        return description[:header_idx].rstrip()
     return description.rstrip()
 
 
@@ -101,10 +126,18 @@ class WriteBack:
             actions.append(f"[dry-run] update custom field '{self.field_name}' = {payload[:80]}...")
         else:
             try:
-                self.client.update_custom_field(issue_id, self.field_name, payload, custom_field=custom_field_slot)
-            except TypeError:
-                self.client.update_custom_field(issue_id, self.field_name, payload)
-            actions.append(f"updated custom field '{self.field_name}'")
+                try:
+                    self.client.update_custom_field(issue_id, self.field_name, payload, custom_field=custom_field_slot)
+                except TypeError:
+                    self.client.update_custom_field(issue_id, self.field_name, payload)
+                actions.append(f"updated custom field '{self.field_name}'")
+            except Exception as e:
+                err_msg = str(e)
+                if "PM.02303005" in err_msg or "PM.00000001" in err_msg or "无权限" in err_msg or "网络繁忙" in err_msg:
+                    logger.warning("CodeArts custom field update skipped for issue %s: %s", issue_id, e)
+                    actions.append("custom field write skipped (CodeArts API error)")
+                else:
+                    raise
 
         # 2. 描述追加（带标记，先剥离旧块）
         if self.description_append:
@@ -113,8 +146,16 @@ class WriteBack:
             if dry_run:
                 actions.append("[dry-run] append triage block to description")
             else:
-                self.client.update_description(issue_id, new_desc)
-                actions.append("appended triage block to description")
+                try:
+                    self.client.update_description(issue_id, new_desc)
+                    actions.append("appended triage block to description")
+                except Exception as e:
+                    err_msg = str(e)
+                    if "PM.02303005" in err_msg or "PM.00000001" in err_msg or "无权限" in err_msg or "网络繁忙" in err_msg:
+                        logger.warning("CodeArts description update skipped for issue %s: %s", issue_id, e)
+                        actions.append("description append skipped (CodeArts API error)")
+                    else:
+                        raise
 
         # 3. 自动改字段（全部默认关）
         updates: dict[str, Optional[int]] = {
@@ -127,12 +168,19 @@ class WriteBack:
             if dry_run:
                 actions.append(f"[dry-run] auto field updates would be: {updates}")
             else:
-                self.client.update_fields(
-                    issue_id,
-                    severity_id=updates["severity"] if self.auto.get("severity") else None,
-                    priority_id=updates["priority"] if self.auto.get("priority") else None,
-                    module_id=updates["module"] if self.auto.get("module") else None,
-                    assigned_id=updates["assignee"] if self.auto.get("assignee") else None,
-                )
-                actions.append(f"auto updated fields: {updates}")
+                try:
+                    self.client.update_fields(
+                        issue_id,
+                        severity_id=updates["severity"] if self.auto.get("severity") else None,
+                        priority_id=updates["priority"] if self.auto.get("priority") else None,
+                        module_id=updates["module"] if self.auto.get("module") else None,
+                        assigned_id=updates["assignee"] if self.auto.get("assignee") else None,
+                    )
+                    actions.append(f"auto updated fields: {updates}")
+                except Exception as e:
+                    if "PM.02303005" in str(e) or "无权限" in str(e):
+                        logger.warning("CodeArts fields update skipped (no permission for issue %s): %s", issue_id, e)
+                        actions.append("auto fields update skipped (no permission: PM.02303005)")
+                    else:
+                        raise
         return actions

@@ -13,9 +13,11 @@ dist/
 build/
 
 # 运行产物
-state.json
-state.json.tmp
+state*.json
+state*.json.tmp
 *.log
 
-# 本地规则（复制自 rules.example.yaml，含负责人映射，勿提交）
+# 本地规则与私有映射（勿提交）
 rules.yaml
+*.local.json
+project_mapping.json

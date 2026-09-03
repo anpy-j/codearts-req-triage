@@ -2,7 +2,7 @@
 
 import sys
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -56,7 +56,7 @@ class TriagePipelineTest(unittest.TestCase):
                 interval = pipeline._build_time_interval()
 
             start, end = interval.split(",")
-            expected_start = int(datetime(2026, 8, 18, 7, 59, 0, tzinfo=timezone.utc).timestamp() * 1000)
+            expected_start = int(datetime(2026, 8, 18, 7, 59, 0, tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
             expected_end = int(fixed_now.timestamp() * 1000)
             self.assertEqual(int(start), expected_start)
             self.assertEqual(int(end), expected_end)

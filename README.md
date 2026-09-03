@@ -1,8 +1,9 @@
 # CodeArts Req 自动化 Bug 分诊 — 轮询 MVP
 
-华为云 CodeArts Req（ProjectMan OpenAPI）缺陷的自动化分诊：增量轮询新缺陷 → AI 分诊（模块分类 / 优先级建议 / 负责人建议 / 代码定位）→ 保守写回（自定义字段 + 描述摘要）。
+华为云 CodeArts Req（ProjectMan OpenAPI）缺陷的自动化分诊：增量轮询新缺陷 → AI 分诊（模块分类 / 优先级建议 / 负责人建议 / 代码定位）→ 三层多平台智能路由（如 商城业务平台 / 买家端App / 运营管理后台）→ Multica 看板建单与智能体指派 → 修复完成后状态闭环回调。
 
-配套方案文档见 [`docs/INTEGRATION_PLAN.md`](docs/INTEGRATION_PLAN.md)（阶段一产物，含触发验证清单、架构、API 清单、安全、分诊规则、华为云侧准备清单）。
+- 完整集成指南：[`docs/Multica与华为云CodeArts缺陷自动化分诊与双向流转集成指南.md`](docs/Multica与华为云CodeArts缺陷自动化分诊与双向流转集成指南.md)
+- 配套集成方案：[`docs/INTEGRATION_PLAN.md`](docs/INTEGRATION_PLAN.md)（含触发验证清单、架构、API 清单、安全规范）
 
 ## 技术选型
 

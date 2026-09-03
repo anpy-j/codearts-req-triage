@@ -111,8 +111,20 @@ class WriteBackTest(unittest.TestCase):
         actions = self.wb.apply(issue, RESULT, dry_run=False)
         self.assertEqual(len(self.client.custom_field_writes), 1)
         self.assertEqual(self.client.custom_field_writes[0][1], "AI分诊")
+    def test_sanitize_req_text(self):
+        from codearts_triage.writeback import sanitize_req_text
 
+        text_with_emoji = "## 🤖 AI 分诊摘要 👍🎉"
+        self.assertEqual(sanitize_req_text(text_with_emoji), "##  AI 分诊摘要 ")
+        self.assertEqual(sanitize_req_text("正常文本"), "正常文本")
+        self.assertEqual(sanitize_req_text(""), "")
+
+    def test_strip_old_triage_block_without_html_comments(self):
+        old = "原始描述内容\n\n## AI 分诊摘要\n- 模块：auth\n- 优先级建议：P2\n- 关键词：multica\n- 说明：自动化分诊生成，仅供参考（规则 vbuiltin-1.0）"
+        stripped = strip_old_triage_block(old)
+        self.assertEqual(stripped, "原始描述内容")
 
 
 if __name__ == "__main__":
     unittest.main()
+

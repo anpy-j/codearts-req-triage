@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -62,17 +63,71 @@ def main() -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="显示 Bug 详细信息与分诊完整内容")
     parser.add_argument("--rules", default=None, help="规则文件路径（覆盖环境变量 RULES_FILE）")
     parser.add_argument("--state", default=None, help="状态文件路径（覆盖环境变量 STATE_FILE）")
+    parser.add_argument("--handlers", default=None, help="华为云处理人白名单（逗号分隔，覆盖环境变量 MULTICA_SYNC_HANDLERS）")
+    parser.add_argument("--assignee", default=None, help="Multica 接收人名字或用户 ID（覆盖环境变量 MULTICA_ASSIGNEE_ID）")
+    parser.add_argument("--hw-project", "--project-id", dest="hw_project", default=None, help="华为云 Project ID（覆盖环境变量 HW_PROJECT_ID）")
+    parser.add_argument("--multica-project", default=None, help="Multica 归属项目名称或 ID（如 buyer-app-service, trade-system-backend）")
+    parser.add_argument("--project-mapping", default=None, help="模块/系统到 Multica 项目与指派人的映射（JSON 或 key:project:assignee,...）")
+    parser.add_argument("--test-branch", "--target-branch", dest="test_branch", default=None, help="目标测试合并分支名称（如 test-cloud，默认: test-cloud）")
+    parser.add_argument("--resolve", type=int, default=None, help="将指定华为云缺陷 ID 标记为「已解决」(status_id=3)")
+    parser.add_argument("--set-status", nargs=2, metavar=("ISSUE_ID", "STATUS_ID"), type=int, default=None, help="修改指定华为云缺陷状态")
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     from codearts_triage.config import Config
 
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
     cfg = Config()
     if args.rules:
         cfg.rules_file = args.rules
+    if args.hw_project:
+        cfg.project_id = args.hw_project.strip()
+        if not args.state:
+            cfg.state_file = str(PROJECT_ROOT / f"state_{cfg.project_id}.json")
     if args.state:
         cfg.state_file = args.state
+    elif not os.path.isabs(cfg.state_file):
+        cfg.state_file = str(PROJECT_ROOT / cfg.state_file)
+    if args.multica_project:
+        cfg.multica_project = args.multica_project.strip()
+    if args.project_mapping:
+        from codearts_triage.multica_sync import parse_project_mapping
+        cfg.multica_project_mapping = parse_project_mapping(args.project_mapping)
+    if args.test_branch:
+        cfg.test_branch = args.test_branch.strip()
+    if args.handlers is not None:
+        cfg.multica_sync_handlers = [h.strip() for h in args.handlers.split(",") if h.strip()]
+    if args.assignee is not None:
+        cfg.multica_assignee_id = args.assignee.strip()
+
+    if args.resolve:
+        ak = cfg.ak_write or cfg.ak_read
+        sk = cfg.sk_write or cfg.sk_read
+        from codearts_triage.client import ProjectManClient
+        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
+        try:
+            client.update_status(args.resolve, status_id=3)
+            print(f"成功将华为云 Bug #{args.resolve} 状态更新为「已解决」 (status_id=3)")
+            return 0
+        except Exception as e:
+            print(f"更新华为云 Bug #{args.resolve} 状态失败: {e}", file=sys.stderr)
+            return 1
+
+    if args.set_status:
+        issue_id, status_id = args.set_status
+        ak = cfg.ak_write or cfg.ak_read
+        sk = cfg.sk_write or cfg.sk_read
+        from codearts_triage.client import ProjectManClient
+        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
+        try:
+            client.update_status(issue_id, status_id=status_id)
+            print(f"成功将华为云 Bug #{issue_id} 状态更新为 status_id={status_id}")
+            return 0
+        except Exception as e:
+            print(f"更新华为云 Bug #{issue_id} 状态失败: {e}", file=sys.stderr)
+            return 1
 
     if args.init_state:
         from codearts_triage.state import State

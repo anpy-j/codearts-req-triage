@@ -36,6 +36,25 @@ def _env_int_list(name: str, default: str) -> list[int]:
     return out or [3]
 
 
+def _env_str_list(name: str, default: str = "") -> list[str]:
+    raw = os.getenv(name, default)
+    if not raw or not raw.strip():
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _env_json_dict(name: str) -> dict[str, str]:
+    raw = os.getenv(name, "")
+    if not raw or not raw.strip():
+        return {}
+    try:
+        import json
+        val = json.loads(raw)
+        return {str(k): str(v) for k, v in val.items()} if isinstance(val, dict) else {}
+    except Exception:
+        return {}
+
+
 @dataclass
 class Config:
     """从环境变量构建的运行配置。"""
@@ -52,6 +71,8 @@ class Config:
     poll_limit: int = field(default_factory=lambda: _env_int("POLL_LIMIT", 100))
     poll_interval_seconds: int = field(default_factory=lambda: _env_int("POLL_INTERVAL_SECONDS", 300))
     lookback_seconds: int = field(default_factory=lambda: _env_int("LOOKBACK_SECONDS", 60))
+    # 华为云项目时区偏移（默认东八区北京时间 UTC+8）
+    timezone_offset_hours: int = field(default_factory=lambda: _env_int("TIMEZONE_OFFSET_HOURS", 8))
 
     state_file: str = field(default_factory=lambda: os.getenv("STATE_FILE", "./state.json"))
     rules_file: str = field(default_factory=lambda: os.getenv("RULES_FILE", "./rules.yaml"))
@@ -69,6 +90,23 @@ class Config:
     auto_change_priority: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_PRIORITY", False))
     auto_change_module: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_MODULE", False))
     auto_change_assignee: bool = field(default_factory=lambda: _env_bool("AUTO_CHANGE_ASSIGNEE", False))
+
+    # Multica 平台联动配置
+    multica_sync_enabled: bool = field(default_factory=lambda: _env_bool("MULTICA_SYNC_ENABLED", False))
+    multica_assignee_id: str = field(
+        default_factory=lambda: os.getenv("MULTICA_ASSIGNEE_ID", "")
+    )
+    multica_sync_min_priority: str = field(default_factory=lambda: os.getenv("MULTICA_SYNC_MIN_PRIORITY", "P4"))
+    # 处理人白名单过滤：逗号分隔的用户名/姓名（如 dev_user1,dev_user2），为空则同步所有处理人
+    multica_sync_handlers: list[str] = field(default_factory=lambda: _env_str_list("MULTICA_SYNC_HANDLERS", ""))
+    # 华为云处理人 -> Multica 成员 ID 映射表（JSON 字符串）
+    multica_handler_mapping: dict[str, str] = field(default_factory=lambda: _env_json_dict("MULTICA_HANDLER_MAPPING"))
+    # Multica 目标归属项目（名称或 UUID）
+    multica_project: str = field(default_factory=lambda: os.getenv("MULTICA_PROJECT", ""))
+    # 模块/系统 -> Multica 项目及负责人路由映射
+    multica_project_mapping: dict[str, dict[str, str]] = field(default_factory=lambda: _env_json_dict("MULTICA_PROJECT_MAPPING"))
+    # 修复完成后的目标测试合流分支（如 test-cloud，可在命令行或定时任务动态指定）
+    test_branch: str = field(default_factory=lambda: os.getenv("TEST_BRANCH", "test-cloud"))
 
     @property
     def has_read_credentials(self) -> bool:

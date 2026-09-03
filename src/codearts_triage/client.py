@@ -191,6 +191,10 @@ class ProjectManClient:
             except Exception:
                 pass
 
+        if not custom_field:
+            logger.info("Custom field '%s' not configured on issue %s, skipping API call", field_name, issue_id)
+            return
+
         body = IssueRequestV4(
             new_custom_fields=[NewCustomField(custom_field=custom_field, field_name=field_name, value=value)]
         )
@@ -203,8 +207,11 @@ class ProjectManClient:
             IssueRequestV4,
             UpdateIssueV4Request,
         )
+        import re
 
-        body = IssueRequestV4(description=description)
+        # 清理华为云不支持的 4 字节 emoji 表情字符（防 PM.02101004）
+        sanitized = re.sub(r"[\U00010000-\U0010FFFF\uD800-\uDFFF]", "", description)
+        body = IssueRequestV4(description=sanitized)
         request = UpdateIssueV4Request(project_id=self.project_id, issue_id=issue_id, body=body)
         self._client.update_issue_v4(request)
 
@@ -237,6 +244,17 @@ class ProjectManClient:
         request = UpdateIssueV4Request(project_id=self.project_id, issue_id=issue_id, body=body)
         self._client.update_issue_v4(request)
 
+    def update_status(self, issue_id: int, status_id: int = 3) -> None:
+        """更新缺陷状态（默认 3: 已解决，2: 进行中，1: 新建，5: 已关闭）。"""
+        from huaweicloudsdkprojectman.v4.model import (
+            IssueRequestV4,
+            UpdateIssueV4Request,
+        )
+
+        body = IssueRequestV4(status_id=status_id)
+        request = UpdateIssueV4Request(project_id=self.project_id, issue_id=issue_id, body=body)
+        self._client.update_issue_v4(request)
+
 
 class FakeClient:
     """测试用内存客户端：记录调用、返回固定数据，不联网无凭据。
@@ -252,6 +270,7 @@ class FakeClient:
         self.custom_field_writes: list[tuple[int, str, str]] = []
         self.description_writes: list[tuple[int, str]] = []
         self.field_updates: list[dict] = []
+        self.status_updates: list[tuple[int, int]] = []
 
     def list_issues(self, updated_time_interval=None, tracker_ids=None, limit=100, offset=0, include_deleted=False):
         self.calls.append(f"list_issues:{updated_time_interval}")
@@ -297,3 +316,7 @@ class FakeClient:
                 "assigned_id": assigned_id,
             }
         )
+
+    def update_status(self, issue_id, status_id=3):
+        self.calls.append(f"update_status:{issue_id}:{status_id}")
+        self.status_updates.append((issue_id, status_id))

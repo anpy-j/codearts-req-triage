@@ -43,6 +43,17 @@ class TriagePipeline:
                 "assignee": config.auto_change_assignee,
             },
         )
+        from codearts_triage.multica_sync import MulticaSync
+
+        self.multica_sync = MulticaSync(
+            enabled=getattr(config, "multica_sync_enabled", False),
+            assignee_id=getattr(config, "multica_assignee_id", None),
+            min_priority=getattr(config, "multica_sync_min_priority", "P4"),
+            sync_handlers=getattr(config, "multica_sync_handlers", None),
+            handler_mapping=getattr(config, "multica_handler_mapping", None),
+            multica_project=getattr(config, "multica_project", None),
+            project_mapping=getattr(config, "multica_project_mapping", None),
+        )
 
     # ---- 拉取 ----
 
@@ -57,11 +68,17 @@ class TriagePipeline:
         raw_cursor = self.state.get_cursor()
         if raw_cursor:
             try:
-                # API 原值无时区，按 UTC 解析（华为云 API 时间一般为 UTC）
-                start_dt = datetime.strptime(raw_cursor, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                # 华为云 API 返回的 updated_time 为项目时区（默认东八区北京时间 UTC+8）
+                # 必须按对应时区解析，转换为 Unix 毫秒时间戳传给 API
+                offset = getattr(self.config, "timezone_offset_hours", 8)
+                c_tz = timezone(timedelta(hours=offset))
+                start_dt = datetime.strptime(raw_cursor, "%Y-%m-%d %H:%M:%S").replace(tzinfo=c_tz)
             except ValueError:
                 logger.warning("unparseable cursor %r, defaulting to 24h lookback", raw_cursor)
         start_dt = start_dt - timedelta(seconds=self.config.lookback_seconds)
+        if start_dt > end:
+            logger.warning("start_dt %s > end %s, adjusting to lookback window", start_dt, end)
+            start_dt = end - timedelta(seconds=self.config.lookback_seconds)
         return f"{_api_timestamp_ms(start_dt)},{_api_timestamp_ms(end)}"
 
     def fetch_candidates(self) -> list[dict[str, Any]]:
@@ -214,15 +231,40 @@ class TriagePipeline:
                             latest_updated = updated_time
                     continue
 
-                # 写回使用详情 dict（含 description，避免覆盖原始描述）
                 if persist:
                     actions = self.writeback.apply(detail, result, dry_run=False)
                     self.state.mark_processed(issue_id, updated_time, h)
                     self.state.clear_error(issue_id)
                     if updated_time and (latest_updated is None or updated_time > latest_updated):
                         latest_updated = updated_time
+                    if self.multica_sync and self.multica_sync.enabled:
+                        multica_id = self.multica_sync.sync_issue(
+                            issue_id=issue_id,
+                            title=detail.get("name", ""),
+                            description=detail.get("description", ""),
+                            result=result,
+                            assigned_user=detail.get("assigned_user"),
+                            raw_module=detail.get("module"),
+                            raw_issue=detail,
+                            multica_project=getattr(self.config, "multica_project", None),
+                            project_id=self.config.project_id,
+                            region=self.config.region,
+                            test_branch=getattr(self.config, "test_branch", "test-cloud"),
+                        )
+                        if multica_id:
+                            actions.append(f"synced to Multica inbox (issue {multica_id})")
                 else:
                     actions = self.writeback.apply(detail, result, dry_run=True)
+                    if getattr(self.config, "multica_sync_enabled", False):
+                        p, a, detected = self.multica_sync.resolve_target(
+                            raw_issue=detail,
+                            module_name=detail.get("module") or result.get("module"),
+                            title=detail.get("name"),
+                            description=detail.get("description"),
+                            assigned_user=detail.get("assigned_user"),
+                            override_project=getattr(self.config, "multica_project", None),
+                        )
+                        actions.append(f"[dry-run] would sync to Multica (platform={detected}, project={p}, assignee={a})")
                 summary["written"] += 1
                 summary["details"].append({
                     "issue_id": issue_id,
