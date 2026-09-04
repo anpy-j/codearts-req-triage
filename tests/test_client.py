@@ -35,7 +35,7 @@ class ProjectManClientRequestTest(unittest.TestCase):
             "POST",
             header_params={"Content-Type": "application/json"},
             body={
-                "id": 71083121,
+                "id": "71083121",
                 "notes": "[AI处理结果]\n已修复",
                 "project_uuid": "a1b2c3d4e5f678901234567890abcdef",
                 "type": "scrum",

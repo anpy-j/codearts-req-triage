@@ -160,25 +160,19 @@ class ProjectManClient:
         headers = {"Content-Type": "application/json"}
         if self.auth_token:
             headers["X-Auth-Token"] = self.auth_token
-        try:
-            response = self._client.call_api(
-                "/v2/issues/update-issue-notes",
-                "POST",
-                header_params=headers,
-                body={
-                    "id": int(issue_id),
-                    "notes": notes,
-                    "project_uuid": self.project_id,
-                    "type": "scrum",
-                },
-            )
-        except Exception as exc:
-            if not self.auth_token:
-                raise RuntimeError(
-                    "CodeArts AddIssueNotes rejected AK/SK signing; set HW_AUTH_TOKEN "
-                    "from an IAM project token in the local .env (never post it to an issue)"
-                ) from exc
-            raise
+        response = self._client.call_api(
+            "/v2/issues/update-issue-notes",
+            "POST",
+            header_params=headers,
+            body={
+                # AddIssueNotes 的契约是 1–10 位数字字符串；传 JSON number 会在
+                # 部分租户落入旧版 V2 编排层并返回误导性的 DEV_21_50000。
+                "id": str(issue_id),
+                "notes": notes,
+                "project_uuid": self.project_id,
+                "type": "scrum",
+            },
+        )
         raw = getattr(response, "raw_content", b"") or b""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
