@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+from html import escape
 from typing import Any, Optional
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,23 @@ def _associated_commits_request_kwargs(
         "type": "commit",
         "limit": limit,
         "offset": offset,
+    }
+
+
+def _issue_notes_body(project_id: str, issue_id: int, notes: str) -> dict[str, Any]:
+    """构造当前 CodeArts 租户实际接受的 AddIssueNotes 请求体。
+
+    官方文档使用 snake_case，但真实网页请求及 cn-north-1 后端要求
+    projectUUId/innerText，并把富文本 notes 作为 URL 编码后的 HTML 传入。
+    """
+    plain = str(notes)
+    rich_text = f"<p>{escape(plain).replace(chr(10), '<br>')}</p>"
+    return {
+        "id": int(issue_id),
+        "innerText": plain,
+        "notes": quote(rich_text, safe=""),
+        "projectUUId": project_id,
+        "type": "scrum",
     }
 
 
@@ -218,13 +237,7 @@ class ProjectManClient:
         huaweicloudsdkprojectman 尚未生成对应方法。配置 IAM Token 时直接发送纯 Token
         请求，避免 SDK Core 额外叠加 AK/SK 签名；未配置 Token 时继续使用 SDK 签名。
         """
-        body = {
-            # AddIssueNotes 参数契约要求 1–10 位数字字符串。
-            "id": str(issue_id),
-            "notes": notes,
-            "project_uuid": self.project_id,
-            "type": "scrum",
-        }
+        body = _issue_notes_body(self.project_id, issue_id, notes)
         token = self.get_auth_token()
         if token:
             import requests

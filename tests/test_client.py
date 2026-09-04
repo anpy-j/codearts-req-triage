@@ -7,7 +7,11 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from codearts_triage.client import ProjectManClient, _associated_commits_request_kwargs
+from codearts_triage.client import (
+    ProjectManClient,
+    _associated_commits_request_kwargs,
+    _issue_notes_body,
+)
 
 
 class ProjectManClientRequestTest(unittest.TestCase):
@@ -19,6 +23,18 @@ class ProjectManClientRequestTest(unittest.TestCase):
         self.assertEqual(kwargs["issue_id"], 123)
         self.assertEqual(kwargs["limit"], 50)
         self.assertEqual(kwargs["offset"], 0)
+
+    def test_issue_notes_body_matches_working_codearts_contract(self):
+        body = _issue_notes_body("project-id", 7, "修复完成\nSELECT a < b;")
+
+        self.assertEqual(body["id"], 7)
+        self.assertEqual(body["innerText"], "修复完成\nSELECT a < b;")
+        self.assertEqual(body["projectUUId"], "project-id")
+        self.assertEqual(body["type"], "scrum")
+        self.assertEqual(
+            body["notes"],
+            "%3Cp%3E%E4%BF%AE%E5%A4%8D%E5%AE%8C%E6%88%90%3Cbr%3ESELECT%20a%20%26lt%3B%20b%3B%3C%2Fp%3E",
+        )
 
     def test_add_comment_uses_official_v2_endpoint_with_sdk_signing(self):
         client = ProjectManClient.__new__(ProjectManClient)
@@ -35,9 +51,10 @@ class ProjectManClientRequestTest(unittest.TestCase):
             "POST",
             header_params={"Content-Type": "application/json"},
             body={
-                "id": "71083121",
-                "notes": "[AI处理结果]\n已修复",
-                "project_uuid": "a1b2c3d4e5f678901234567890abcdef",
+                "id": 71083121,
+                "innerText": "[AI处理结果]\n已修复",
+                "notes": "%3Cp%3E%5BAI%E5%A4%84%E7%90%86%E7%BB%93%E6%9E%9C%5D%3Cbr%3E%E5%B7%B2%E4%BF%AE%E5%A4%8D%3C%2Fp%3E",
+                "projectUUId": "a1b2c3d4e5f678901234567890abcdef",
                 "type": "scrum",
             },
         )
@@ -63,9 +80,10 @@ class ProjectManClientRequestTest(unittest.TestCase):
                 "X-Auth-Token": "iam-token",
             },
             json={
-                "id": "7",
-                "notes": "result",
-                "project_uuid": "a1b2c3d4e5f678901234567890abcdef",
+                "id": 7,
+                "innerText": "result",
+                "notes": "%3Cp%3Eresult%3C%2Fp%3E",
+                "projectUUId": "a1b2c3d4e5f678901234567890abcdef",
                 "type": "scrum",
             },
             timeout=30,
