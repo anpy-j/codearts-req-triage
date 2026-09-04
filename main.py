@@ -47,7 +47,16 @@ def build_pipeline(cfg) -> tuple:
     sk = cfg.sk_write or cfg.sk_read
     if cfg.writeback_enabled and not cfg.has_write_credentials:
         logging.warning("WRITEBACK_ENABLED=true 但未配置写回 key，将使用只读 key（仅写自定义字段/描述，需成员确认权限）")
-    client = ProjectManClient(cfg.region, ak, sk, cfg.project_id, auth_token=cfg.auth_token)
+    client = ProjectManClient(
+        cfg.region,
+        ak,
+        sk,
+        cfg.project_id,
+        auth_token=cfg.auth_token,
+        iam_domain=cfg.iam_domain,
+        iam_user=cfg.iam_user,
+        iam_password=cfg.iam_password,
+    )
     rules = Rules.load(cfg.rules_file)
     state = State(cfg.state_file)
     return TriagePipeline(client, cfg, rules, state), rules, state
@@ -73,6 +82,7 @@ def main() -> int:
     parser.add_argument("--resolve", type=int, default=None, help="将指定华为云缺陷 ID 标记为「已解决」(status_id=3)")
     parser.add_argument("--comment-file", default=None, help="在 --resolve 前把 UTF-8 文件内容作为 [AI处理结果] 评论写入华为云")
     parser.add_argument("--set-status", nargs=2, metavar=("ISSUE_ID", "STATUS_ID"), type=int, default=None, help="修改指定华为云缺陷状态")
+    parser.add_argument("--login-iam", action="store_true", help="交互式登录华为云 IAM 获取 X-Auth-Token 并自动写入 .env")
     args = parser.parse_args()
 
     if args.comment_file and not args.resolve:
@@ -85,6 +95,53 @@ def main() -> int:
     PROJECT_ROOT = Path(__file__).resolve().parent
 
     cfg = Config()
+
+    if args.login_iam:
+        import getpass, requests, re
+        print("=== 华为云 IAM 登录与 Token 获取 ===")
+        domain_prompt = f" (当前: {cfg.iam_domain})" if cfg.iam_domain else ""
+        user_prompt = f" (当前: {cfg.iam_user})" if cfg.iam_user else ""
+        domain = input(f"请输入主账号/企业名称{domain_prompt}: ").strip() or cfg.iam_domain
+        user = input(f"请输入IAM子账号用户名{user_prompt}: ").strip() or cfg.iam_user
+        password = getpass.getpass("请输入IAM子账号密码: ")
+        region = cfg.region or "cn-north-1"
+        url = f"https://iam.{region}.myhuaweicloud.com/v3/auth/tokens"
+        payload = {
+            "auth": {
+                "identity": {
+                    "methods": ["password"],
+                    "password": {
+                        "user": {
+                            "name": user,
+                            "password": password,
+                            "domain": {"name": domain},
+                        }
+                    },
+                },
+                "scope": {"project": {"name": region}},
+            }
+        }
+        try:
+            resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+            if resp.status_code in (200, 201):
+                token = resp.headers.get("X-Subject-Token")
+                print("✅ 登录成功！已成功获取 X-Auth-Token。")
+                env_path = PROJECT_ROOT / ".env"
+                if env_path.exists():
+                    c = env_path.read_text(encoding="utf-8")
+                    if "HW_AUTH_TOKEN=" in c:
+                        c = re.sub(r"HW_AUTH_TOKEN=.*", f"HW_AUTH_TOKEN={token}", c)
+                    else:
+                        c += f"\nHW_AUTH_TOKEN={token}\n"
+                    env_path.write_text(c, encoding="utf-8")
+                    print("✅ 已自动更新本地 .env 中的 HW_AUTH_TOKEN")
+                return 0
+            else:
+                print(f"❌ 登录获取 Token 失败: {resp.status_code} {resp.text}", file=sys.stderr)
+                return 1
+        except Exception as exc:
+            print(f"❌ 请求华为云 IAM 服务异常: {exc}", file=sys.stderr)
+            return 1
     if args.rules:
         cfg.rules_file = args.rules
     if args.hw_project:
@@ -115,7 +172,16 @@ def main() -> int:
         from codearts_triage.client import ProjectManClient
         from codearts_triage.completion import complete_issue
         from codearts_triage.state import State
-        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id, auth_token=cfg.auth_token)
+        client = ProjectManClient(
+            cfg.region,
+            ak,
+            sk,
+            cfg.project_id,
+            auth_token=cfg.auth_token,
+            iam_domain=cfg.iam_domain,
+            iam_user=cfg.iam_user,
+            iam_password=cfg.iam_password,
+        )
         try:
             comment_text = None
             if args.comment_file:
@@ -141,7 +207,16 @@ def main() -> int:
         ak = cfg.ak_write or cfg.ak_read
         sk = cfg.sk_write or cfg.sk_read
         from codearts_triage.client import ProjectManClient
-        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id, auth_token=cfg.auth_token)
+        client = ProjectManClient(
+            cfg.region,
+            ak,
+            sk,
+            cfg.project_id,
+            auth_token=cfg.auth_token,
+            iam_domain=cfg.iam_domain,
+            iam_user=cfg.iam_user,
+            iam_password=cfg.iam_password,
+        )
         try:
             client.update_status(issue_id, status_id=status_id)
             print(f"成功将华为云 Bug #{issue_id} 状态更新为 status_id={status_id}")

@@ -89,19 +89,79 @@ def _issue_detail_to_dict(item: Any) -> dict:
 class ProjectManClient:
     """官方 SDK 薄封装。构造时传入凭据，只读/写回共用同一封装。"""
 
-    def __init__(self, region: str, ak: str, sk: str, project_id: str, auth_token: str = ""):
+    def __init__(
+        self,
+        region: str,
+        ak: str,
+        sk: str,
+        project_id: str,
+        auth_token: str = "",
+        iam_domain: str = "",
+        iam_user: str = "",
+        iam_password: str = "",
+    ):
         from huaweicloudsdkcore.auth.credentials import BasicCredentials
         from huaweicloudsdkprojectman.v4.projectman_client import ProjectManClient as SDKClient
         from huaweicloudsdkprojectman.v4.region.projectman_region import ProjectManRegion
 
+        self.region = region
         self.project_id = project_id
         self.auth_token = auth_token.strip()
+        self.iam_domain = iam_domain.strip()
+        self.iam_user = iam_user.strip()
+        self.iam_password = iam_password.strip()
+        self._cached_token = None
+        self._token_expire_time = 0.0
         self._client = (
             SDKClient.new_builder()
             .with_credentials(BasicCredentials(ak, sk))
             .with_region(ProjectManRegion.value_of(region))
             .build()
         )
+
+    def get_auth_token(self) -> str:
+        """获取有效的 IAM Token：优先使用显式配置的 auth_token，其次使用账号密码自动获取并缓存刷新。"""
+        auth_token = getattr(self, "auth_token", "")
+        if auth_token:
+            return auth_token
+        iam_domain = getattr(self, "iam_domain", "")
+        iam_user = getattr(self, "iam_user", "")
+        iam_password = getattr(self, "iam_password", "")
+        if iam_domain and iam_user and iam_password:
+            import time
+            now = time.time()
+            if getattr(self, "_cached_token", None) and now < getattr(self, "_token_expire_time", 0) - 300:
+                return self._cached_token
+            import requests
+            url = f"https://iam.{self.region}.myhuaweicloud.com/v3/auth/tokens"
+            payload = {
+                "auth": {
+                    "identity": {
+                        "methods": ["password"],
+                        "password": {
+                            "user": {
+                                "name": self.iam_user,
+                                "password": self.iam_password,
+                                "domain": {"name": self.iam_domain},
+                            }
+                        },
+                    },
+                    "scope": {"project": {"name": self.region}},
+                }
+            }
+            try:
+                resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+                if resp.status_code in (200, 201):
+                    token = resp.headers.get("X-Subject-Token")
+                    if token:
+                        self._cached_token = token
+                        self._token_expire_time = now + 24 * 3600
+                        logger.info("Successfully fetched and cached IAM token for %s", self.iam_user)
+                        return token
+                logger.warning("Failed to auto-fetch IAM token: %s %s", resp.status_code, resp.text)
+            except Exception as e:
+                logger.warning("Exception auto-fetching IAM token: %s", e)
+        return ""
 
     # ---- 读 ----
 
@@ -158,8 +218,9 @@ class ProjectManClient:
         HTTP/异常处理能力发起原始请求。
         """
         headers = {"Content-Type": "application/json"}
-        if self.auth_token:
-            headers["X-Auth-Token"] = self.auth_token
+        token = self.get_auth_token()
+        if token:
+            headers["X-Auth-Token"] = token
         response = self._client.call_api(
             "/v2/issues/update-issue-notes",
             "POST",

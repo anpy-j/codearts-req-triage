@@ -3,7 +3,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -53,6 +53,29 @@ class ProjectManClientRequestTest(unittest.TestCase):
 
         kwargs = client._client.call_api.call_args.kwargs
         self.assertEqual(kwargs["header_params"]["X-Auth-Token"], "iam-token")
+
+    @patch("requests.post")
+    def test_add_comment_fetches_token_with_iam_credentials(self, mock_post):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.headers = {"X-Subject-Token": "auto-fetched-token"}
+        mock_post.return_value = mock_resp
+
+        client = ProjectManClient.__new__(ProjectManClient)
+        client.region = "cn-north-1"
+        client.project_id = "a1b2c3d4e5f678901234567890abcdef"
+        client.auth_token = ""
+        client.iam_domain = "test-domain"
+        client.iam_user = "test-user"
+        client.iam_password = "test-password"
+        client._client = MagicMock()
+        client._client.call_api.return_value.raw_content = b'{"status":"success"}'
+
+        client.add_comment(7, "result")
+
+        mock_post.assert_called_once()
+        kwargs = client._client.call_api.call_args.kwargs
+        self.assertEqual(kwargs["header_params"]["X-Auth-Token"], "auto-fetched-token")
 
 
 if __name__ == "__main__":
