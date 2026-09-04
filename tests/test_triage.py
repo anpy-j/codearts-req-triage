@@ -10,18 +10,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from codearts_triage.client import FakeClient
 from codearts_triage.config import Config
-from codearts_triage.rules import Rules
 from codearts_triage.state import State
 from codearts_triage.triage import TriagePipeline
 
 
-def _issue(issue_id, title, severity="一般", updated="2026-08-18 08:00:00", desc="", tracker_id=3):
+def _issue(issue_id, title, severity="一般", updated="2026-08-18 08:00:00", desc="", tracker_id=3, module="auth"):
     return {
         "id": issue_id,
         "name": title,
         "severity": {"id": 2, "name": severity},
         "priority": {"id": 2, "name": "中"},
-        "module": {"id": 1, "name": None},
+        "module": {"id": 1, "name": module},
         "status": {"id": 1, "name": "新建"},
         "tracker": {"id": tracker_id, "name": "Bug" if tracker_id == 3 else "Task"},
         "created_time": "2026-08-18 07:00:00",
@@ -48,8 +47,7 @@ class TriagePipelineTest(unittest.TestCase):
 
     def _pipeline(self, client, state_path):
         state = State(state_path)
-        rules = Rules.load(None)  # 内置默认规则
-        return TriagePipeline(client, self.config, rules, state), state
+        return TriagePipeline(client, self.config, state), state
 
     def test_time_interval_uses_unix_milliseconds(self):
         import tempfile
@@ -214,25 +212,19 @@ class TriagePipelineTest(unittest.TestCase):
             self.assertEqual(len(client.custom_field_writes), 1)
 
     def test_auto_field_updates_when_enabled_with_mapping(self):
-        """开启 AUTO_CHANGE_* 且规则含 id 映射时，才调用 update_fields。"""
+        """开启 AUTO_CHANGE_* 时，按 CodeArts 原始字段 id 调用 update_fields。"""
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            from codearts_triage.rules import Rules
-
             issue = _issue(1, "登录超时 token 校验失败")
+            issue["priority"] = {"id": 3, "name": "中"}
+            issue["assigned_user"] = {"id": 20001, "name": "张三"}
             client = FakeClient(issues=[issue])
-            rules = Rules.load(None)
-            rules.assignee_map = {"auth": "张三"}
-            rules.assignee_id_map = {"张三": 20001}
-            rules.priority_id_map = {"P2": 3}
-            rules.severity_id_map = {"一般": 2}
-            rules.module_id_map = {"auth": 1001}
             state = State(f"{tmp}/state.json")
             self.config.writeback_enabled = True
             self.config.auto_change_priority = True
             self.config.auto_change_assignee = True
-            pipeline = TriagePipeline(client, self.config, rules, state)
+            pipeline = TriagePipeline(client, self.config, state)
             pipeline.run_once()
             self.assertEqual(len(client.field_updates), 1)
             self.assertEqual(client.field_updates[0]["priority_id"], 3)
@@ -243,15 +235,11 @@ class TriagePipelineTest(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            from codearts_triage.rules import Rules
-
             issue = _issue(1, "登录超时 token 校验失败")
             client = FakeClient(issues=[issue])
-            rules = Rules.load(None)
-            rules.assignee_id_map = {"张三": 20001}
             state = State(f"{tmp}/state.json")
             self.config.writeback_enabled = True
-            pipeline = TriagePipeline(client, self.config, rules, state)
+            pipeline = TriagePipeline(client, self.config, state)
             pipeline.run_once()
             self.assertEqual(client.field_updates, [])
 

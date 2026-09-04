@@ -7,14 +7,68 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from .client import F_DESCRIPTION, F_ID, F_MODULE, F_NAME, F_SEVERITY, F_STATUS, F_UPDATED_TIME
-from .code_search import merge_code_hints, search_commits_in_repo, search_in_repo
+from .client import (
+    F_ASSIGNED_USER,
+    F_DESCRIPTION,
+    F_ID,
+    F_MODULE,
+    F_NAME,
+    F_PRIORITY,
+    F_SEVERITY,
+    F_STATUS,
+    F_UPDATED_TIME,
+)
+from .code_search import extract_keywords, merge_code_hints, search_commits_in_repo, search_in_repo
 from .config import Config
-from .rules import Rules
 from .state import State
 from .writeback import WriteBack, strip_old_triage_block, triage_hash
 
 logger = logging.getLogger(__name__)
+
+PRIORITY_NAME_MAP: dict[str, str] = {
+    "p0": "P0",
+    "致命": "P0",
+    "fatal": "P0",
+    "加急": "P0",
+    "特急": "P0",
+    "紧急": "P0",
+    "urgent": "P0",
+    "p1": "P1",
+    "严重": "P1",
+    "critical": "P1",
+    "高": "P1",
+    "high": "P1",
+    "p2": "P2",
+    "一般": "P2",
+    "normal": "P2",
+    "中": "P2",
+    "medium": "P2",
+    "p3": "P3",
+    "轻微": "P3",
+    "minor": "P3",
+    "低": "P3",
+    "low": "P3",
+    "p4": "P4",
+}
+DEFAULT_PRIORITY = "P2"
+DEFAULT_MODULE = "other"
+DEFAULT_SEVERITY = "一般"
+
+
+def resolve_priority_suggestion(
+    priority_name: Optional[str],
+    severity_name: Optional[str],
+) -> str:
+    """优先根据 CodeArts priority 归一为 P0~P4；缺失或无法识别时根据 severity 映射；均缺失时默认中性值 P2。"""
+    if priority_name:
+        p_norm = PRIORITY_NAME_MAP.get(str(priority_name).strip().lower())
+        if p_norm:
+            return p_norm
+    if severity_name:
+        s_norm = PRIORITY_NAME_MAP.get(str(severity_name).strip().lower())
+        if s_norm:
+            return s_norm
+    return DEFAULT_PRIORITY
 
 
 def _api_timestamp_ms(dt: datetime) -> str:
@@ -49,11 +103,24 @@ def _parse_hw_datetime(value) -> Optional[datetime]:
 
 
 class TriagePipeline:
-    def __init__(self, client, config: Config, rules: Rules, state: State):
+    def __init__(
+        self,
+        client,
+        config: Config,
+        state: Any,
+        maybe_state: Optional[State] = None,
+        rules: Optional[Any] = None,
+    ):
         self.client = client
         self.config = config
-        self.rules = rules
-        self.state = state
+        if maybe_state is not None:
+            # 兼容历史调用签名 (client, config, rules, state)
+            self.rules = state
+            self.state = maybe_state
+        else:
+            # 标准调用签名 (client, config, state)
+            self.state = state
+            self.rules = rules
         self.writeback = WriteBack(
             client,
             field_name=config.triage_field_name,
@@ -149,12 +216,12 @@ class TriagePipeline:
         raise last_exc
 
     def triage_issue(self, issue: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-        """单条分诊：读详情 → 规则分类 → 代码定位。返回 (detail, result)。"""
+        """单条分诊：读详情 → 保留 CodeArts 原始字段（中性兜底） → 代码定位。返回 (detail, result)。"""
         issue_id = issue[F_ID]
         detail = self.client.show_issue(issue_id)
         title = detail.get(F_NAME) or ""
         raw_description = detail.get(F_DESCRIPTION) or ""
-        # 自己追加的分诊块不能再次进入规则引擎，否则会造成 hash 漂移和重复触发。
+        # 自己追加的分诊块不能再次进入分诊流程，否则会造成 hash 漂移和重复触发。
         description = strip_old_triage_block(raw_description)
         detail["_source_description"] = description
         try:
@@ -162,15 +229,41 @@ class TriagePipeline:
         except Exception as exc:  # 评论是重触发增强信息，读取失败不应阻断主分诊。
             logger.warning("failed to list comments for issue %s: %s", issue_id, exc)
             detail["_comments"] = []
-        severity = (detail.get(F_SEVERITY) or {}).get("name")
-        module = detail.get(F_MODULE) or {}
-        module_name = (module or {}).get("name")
+
+        # 优先读取 CodeArts 原生字段；缺失时使用稳定中性默认值，不再依赖关键词推测
+        module_obj = detail.get(F_MODULE) or {}
+        module_id = module_obj.get("id") if isinstance(module_obj, dict) else None
+        module_name_raw = (
+            module_obj.get("name") if isinstance(module_obj, dict) else (str(module_obj) if module_obj else None)
+        )
+        module_name = module_name_raw.strip() if module_name_raw else None
+        module_val = module_name or DEFAULT_MODULE
+
+        severity_obj = detail.get(F_SEVERITY) or {}
+        severity_id = severity_obj.get("id") if isinstance(severity_obj, dict) else None
+        severity_name_raw = (
+            severity_obj.get("name") if isinstance(severity_obj, dict) else (str(severity_obj) if severity_obj else None)
+        )
+        severity_val = severity_name_raw.strip() if severity_name_raw else DEFAULT_SEVERITY
+
+        priority_obj = detail.get(F_PRIORITY) or {}
+        priority_id = priority_obj.get("id") if isinstance(priority_obj, dict) else None
+        priority_name_raw = (
+            priority_obj.get("name") if isinstance(priority_obj, dict) else (str(priority_obj) if priority_obj else None)
+        )
+        priority_suggestion = resolve_priority_suggestion(priority_name_raw, severity_val)
+
+        assigned_user = detail.get(F_ASSIGNED_USER) or {}
+        assignee_id = assigned_user.get("id") if isinstance(assigned_user, dict) else None
+        assignee_name_raw = (
+            assigned_user.get("name")
+            if isinstance(assigned_user, dict)
+            else (str(assigned_user) if assigned_user else None)
+        )
+        assignee_suggestion = assignee_name_raw.strip() if assignee_name_raw else None
 
         text = f"{title}\n{description}"
-        module_hit = self.rules.classify_module(text)
-        priority = self.rules.suggest_priority(severity, text)
-        assignee = self.rules.suggest_assignee(module_hit)
-        keywords = self.rules.extract_keywords(text)
+        keywords = extract_keywords(text)
 
         # 代码定位：本地 clone 关键词搜索 + API 关联提交
         local_hits = search_in_repo(self.config.repo_local_path, keywords)
@@ -179,27 +272,20 @@ class TriagePipeline:
 
         result = {
             "issue_id": issue_id,
-            "module": module_hit,
+            "module": module_val,
             "module_name": module_name,
-            "priority_suggestion": priority,
-            "severity": severity,
-            "assignee_suggestion": assignee,
+            "priority_suggestion": priority_suggestion,
+            "severity": severity_val,
+            "assignee_suggestion": assignee_suggestion,
             "keywords": keywords,
             "code_hints": code_hints,
-            "summary": self._summarize(title, module_hit, priority),
+            "summary": self._summarize(title, module_val, priority_suggestion),
             "triaged_at": _now_utc().isoformat(),
-            "rule_version": self.rules.rule_version,
+            "severity_id": severity_id,
+            "priority_id": priority_id,
+            "module_id": module_id,
+            "assignee_id": assignee_id,
         }
-        # 自动改字段（默认关）：按规则 id 映射解析，映射缺失则保持 None
-        result.update(
-            {
-                # 与 suggest_priority 一致：严重级名先小写归一，避免大小写不匹配导致静默不生效
-                "severity_id": self.rules.severity_id_map.get((severity or "").strip().lower()),
-                "priority_id": self.rules.priority_id_map.get(priority),
-                "module_id": self.rules.module_id_map.get(module_hit),
-                "assignee_id": self.rules.assignee_id_map.get(assignee) if assignee else None,
-            }
-        )
         return detail, result
 
     @staticmethod

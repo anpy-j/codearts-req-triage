@@ -34,7 +34,6 @@ except ImportError:
 def build_pipeline(cfg) -> tuple:
     from codearts_triage.client import ProjectManClient
     from codearts_triage.config import Config
-    from codearts_triage.rules import Rules
     from codearts_triage.state import State
     from codearts_triage.triage import TriagePipeline
 
@@ -48,9 +47,8 @@ def build_pipeline(cfg) -> tuple:
     if cfg.writeback_enabled and not cfg.has_write_credentials:
         logging.warning("WRITEBACK_ENABLED=true 但未配置写回 key，将使用只读 key（仅写自定义字段/描述，需成员确认权限）")
     client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
-    rules = Rules.load(cfg.rules_file)
     state = State(cfg.state_file)
-    return TriagePipeline(client, cfg, rules, state), rules, state
+    return TriagePipeline(client, cfg, state), state
 
 
 def main() -> int:
@@ -61,7 +59,6 @@ def main() -> int:
     parser.add_argument("--init-state", action="store_true", help="初始化状态文件后退出")
     parser.add_argument("--log-level", default="INFO", help="日志级别")
     parser.add_argument("-v", "--verbose", action="store_true", help="显示 Bug 详细信息与分诊完整内容")
-    parser.add_argument("--rules", default=None, help="规则文件路径（覆盖环境变量 RULES_FILE）")
     parser.add_argument("--state", default=None, help="状态文件路径（覆盖环境变量 STATE_FILE）")
     parser.add_argument("--handlers", default=None, help="华为云处理人白名单（逗号分隔，覆盖环境变量 MULTICA_SYNC_HANDLERS）")
     parser.add_argument("--assignee", default=None, help="Multica 接收人名字或用户 ID（覆盖环境变量 MULTICA_ASSIGNEE_ID）")
@@ -81,8 +78,6 @@ def main() -> int:
     PROJECT_ROOT = Path(__file__).resolve().parent
 
     cfg = Config()
-    if args.rules:
-        cfg.rules_file = args.rules
     if args.hw_project:
         cfg.project_id = args.hw_project.strip()
         if not args.state:
@@ -168,7 +163,7 @@ def main() -> int:
         print(f"state initialized at {cfg.state_file}")
         return 0
 
-    pipeline, rules, state = build_pipeline(cfg)
+    pipeline, state = build_pipeline(cfg)
 
     def run_once() -> None:
         summary = pipeline.run_once(dry_run=args.dry_run)

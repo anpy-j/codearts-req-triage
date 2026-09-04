@@ -18,16 +18,16 @@
 codearts-req-triage/
 ├── docs/INTEGRATION_PLAN.md      # 阶段一集成方案
 ├── main.py                       # CLI 入口：--once / --loop / --dry-run
-├── rules.example.yaml            # 分诊规则样例（复制为 rules.yaml 使用）
 ├── requirements.txt
 ├── .env.example                  # 环境变量样例（复制为 .env）
+├── project_mapping.json          # 平台与项目路由映射（三层分流）
 └── src/codearts_triage/
     ├── config.py                 # 环境变量配置
     ├── client.py                 # ProjectMan SDK 封装（可 mock）
     ├── state.py                  # 增量游标 + 去重 + 错误队列（JSON 状态文件）
-    ├── rules.py                  # 分诊规则加载与执行（模块/优先级/负责人/关键词）
     ├── code_search.py            # 代码定位：本地 clone git grep + 关联提交
     ├── triage.py                 # 编排：拉取 → 分诊 → 写回
+    ├── multica_sync.py           # Multica 平台联动（三层平台路由、收件箱、续跑）
     └── writeback.py              # 保守写回：自定义字段 + 描述追加 + 可选自动改字段
 └── tests/                        # mock 测试（无凭据可跑通）
 ```
@@ -45,9 +45,10 @@ pip install -r requirements.txt
 
 ```bash
 cp .env.example .env
-cp rules.example.yaml rules.yaml
 # 编辑 .env：填 HW_PROJECT_ID、HW_AK_READ、HW_SK_READ（至少只读 key）
 ```
+
+本项目不再依赖 `rules.yaml` 规则引擎，直接读取并保留 CodeArts 原生字段（模块、严重程度、优先级、负责人）；原字段缺失时自动使用稳定的中性默认值。如需配置平台/系统与 Multica 项目及负责人的对应关系，按需维护 `project_mapping.local.json` 或 `project_mapping.json` 即可。
 
 **安全约定**：AK/SK 一律环境变量注入，绝不写入 issue 正文、文档或提交历史。
 
@@ -96,4 +97,4 @@ CodeArts Bug 与 Multica Issue 按 Bug ID 一对一绑定。巡检在创建前�
 
 ## 测试说明
 
-`tests/` 使用内存 fake client 与临时 git 仓库，**不联网、不需要华为云凭据**，覆盖：规则引擎、状态游标与幂等、分诊编排、保守写回、本地代码搜索。
+`tests/` 使用内存 fake client 与临时 git 仓库，**不联网、不需要华为云凭据**，覆盖：原生字段保留与兜底、状态游标与幂等、分诊编排、保守写回、本地代码搜索、Multica 平台联动。

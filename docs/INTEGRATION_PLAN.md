@@ -153,39 +153,27 @@
 
 ---
 
-## 5. 分诊规则与提示词
+## 5. 分诊字段解析与原生映射
 
-### 5.1 分类维度（模块/组件）
+项目已移除人工维护的 `rules.yaml` 规则引擎与内置关键词分诊，直接读取并保留 CodeArts Req 原始字段：
 
-关键词 → 模块映射表（`rules.yaml` 可配置，示例）：
+### 5.1 模块（Module）
 
-| 模块 | 关键词（标题+描述命中任一） |
-|---|---|
-| auth | 登录, 登出, 认证, 鉴权, token, 权限不足, 403, session, 密码 |
-| payment | 支付, 订单, 退款, 金额, 余额, 发票, 交易 |
-| order | 下单, 购物车, 结算, 库存, 商品, SKU |
-| message | 通知, 短信, 邮件, 推送, 消息, 站内信 |
-| data | 报表, 导出, 统计, 图表, 数据不一致, 查询慢 |
-| upload | 上传, 附件, 图片, 文件, OBS, 存储 |
-| api | 接口, API, 超时, 500, 502, 504, 网关, 报错 |
-| ui | 页面, 样式, 前端, 白屏, 布局, 点击无反应, 显示异常 |
-| other | （兜底） |
+- 优先保留 CodeArts 原生 `module` 字段（名称与 ID）；
+- 若原始字段未设置或为空，使用稳定中性默认值 `other`；
+- 不再通过标题或正文关键词（如 `token`、`登录`）推断模块，避免普通接口的 `curl` 内容被误判为 `auth`。
 
-### 5.2 优先级建议规则（建议值，默认不自动写）
+### 5.2 优先级建议（Priority Suggestion）
 
-规则引擎按「严重级 + 影响面 + 关键词」给出 `suggested_priority`（1-5，对应 Req 优先级 id，需成员确认 id 映射）：
+- 优先读取 CodeArts 原生 `priority` 字段并归一化为 `P0~P4`；
+- 若 `priority` 缺失，则根据原生 `severity`（致命→P0，严重→P1，一般→P2，轻微→P3）映射；
+- 两者均缺失时采用稳定中性默认值 `P2`；
+- 不再根据正文关键词（如“崩溃”、“数据丢失”）人工升级优先级。
 
-```
-P0(紧急): 致命级 且 (崩溃|数据丢失|安全漏洞|全部用户不可用|资金)
-P1(高):   严重级 且 (核心功能不可用|大面积报错|性能严重劣化)
-P2(中):   一般级 或 (部分用户受影响|绕行可用)
-P3(低):   轻微级 或 纯 UI/文案
-P4(建议): 优化/体验类
-```
+### 5.3 负责人（Assignee）与平台路由
 
-### 5.3 负责人建议映射表
-
-`rules.yaml` 配置 `module -> suggested_assignee`（成员提供姓名→Req 用户数字 id 的映射）。MVP 只在分诊结论中**建议**，不自动 `assigned_id`（除非成员开启 `AUTO_ASSIGN=true`）。
+- 负责人直接读取 CodeArts 原生 `assigned_user`（名称与用户 ID）；未指派时为 `None`；
+- 缺陷分流至 Multica 项目与负责人的能力统一由 `project_mapping.local.json` / `project_mapping.json` 与 `multica_sync.py` 管理，不再需要维护 `rules.yaml`。
 
 ### 5.4 分诊输出格式
 
@@ -229,8 +217,7 @@ P4(建议): 优化/体验类
 | 4 | 建「AI 分诊」自定义字段 | Req → 项目设置 → 工作项设置 → 自定义字段 → 新建（多行文本） | 字段名（如 `AI分诊`）填入 `.env` `TRIAGE_FIELD_NAME` |
 | 5 | 确认缺陷 tracker_id（预期 3） | 见 §1 第 8 项 | 填 `.env` `TRACKER_IDS=3` |
 | 6 | 确认服务钩子/webhook 可用性 | 见 §1 第 1–4 项 | issue 评论回复 |
-| 7 | 确认标签可写性 | 见 §1 第 6 项 | issue 评论回复 |
-| 8 | 提供负责人姓名→数字 id 映射 | Req 项目成员列表（API `ListProjectMembersV4` 可查） | 填 `rules.yaml` assignee 映射 |
+| 8 | 提供负责人姓名→数字 id 映射 | Req 项目成员列表（API `ListProjectMembersV4` 可查） | 原生读取 assigned_user 或维护 project_mapping.json |
 
 ---
 
@@ -241,7 +228,7 @@ P4(建议): 优化/体验类
 | T1 骨架+配置 | 项目结构、`.env.example`、`config.py`、logging | 无 | 无凭据可 `--help` 运行 |
 | T2 只读客户端 | `client.py`：ListIssuesV4 增量 + ShowIssueV4 详情（只读 key） | T1 | mock 测试通过 |
 | T3 状态与去重 | `state.py`：游标、processed ids、error 队列、幂等 | T1 | 单测覆盖重跑幂等 |
-| T4 分诊引擎 | `rules.py` + `triage.py`：模块/优先级/负责人/关键词 | T1 | 规则单测 + 样例 issue 测试 |
+| T4 分诊编排 | `triage.py`：原生字段保留/优先级映射/中性兜底 | T1 | 单测 + 样例 issue 测试 |
 | T5 代码定位 | `code_search.py`：本地 clone git grep + associated-commits | T4 | 有/无 clone 两态测试 |
 | T6 保守写回 | `writeback.py`：自定义字段 + description 追加 + 可选自动改字段（默认关） | T4 | mock 写回测试 + 幂等测试 |
 | T7 主循环/CLI | `main.py`：`--once` / `--loop` / `--dry-run` | T2–T6 | 端到端 mock 跑通 |
