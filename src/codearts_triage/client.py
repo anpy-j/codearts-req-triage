@@ -106,6 +106,7 @@ class ProjectManClient:
 
         self.region = region
         self.project_id = project_id
+        self.endpoint = ProjectManRegion.value_of(region).endpoint.rstrip("/")
         self.auth_token = auth_token.strip()
         self.iam_domain = iam_domain.strip()
         self.iam_user = iam_user.strip()
@@ -214,27 +215,50 @@ class ProjectManClient:
         """给 Scrum 工作项添加评论。
 
         AddIssueNotes（POST /v2/issues/update-issue-notes）已进入官方 API，但当前
-        huaweicloudsdkprojectman 尚未生成对应方法，因此复用 SDK Core 的 AK/SK 签名与
-        HTTP/异常处理能力发起原始请求。
+        huaweicloudsdkprojectman 尚未生成对应方法。配置 IAM Token 时直接发送纯 Token
+        请求，避免 SDK Core 额外叠加 AK/SK 签名；未配置 Token 时继续使用 SDK 签名。
         """
-        headers = {"Content-Type": "application/json"}
+        body = {
+            # AddIssueNotes 参数契约要求 1–10 位数字字符串。
+            "id": str(issue_id),
+            "notes": notes,
+            "project_uuid": self.project_id,
+            "type": "scrum",
+        }
         token = self.get_auth_token()
         if token:
-            headers["X-Auth-Token"] = token
-        response = self._client.call_api(
-            "/v2/issues/update-issue-notes",
-            "POST",
-            header_params=headers,
-            body={
-                # AddIssueNotes 的契约是 1–10 位数字字符串；传 JSON number 会在
-                # 部分租户落入旧版 V2 编排层并返回误导性的 DEV_21_50000。
-                "id": str(issue_id),
-                "notes": notes,
-                "project_uuid": self.project_id,
-                "type": "scrum",
-            },
-        )
-        raw = getattr(response, "raw_content", b"") or b""
+            import requests
+
+            endpoint = getattr(
+                self,
+                "endpoint",
+                f"https://projectman-ext.{self.region}.myhuaweicloud.com",
+            ).rstrip("/")
+            response = requests.post(
+                f"{endpoint}/v2/issues/update-issue-notes",
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Auth-Token": token,
+                },
+                json=body,
+                timeout=30,
+            )
+            if not response.ok:
+                # requests 默认异常不包含响应正文，而华为云会把可操作的错误码放在
+                # JSON body 中。限制长度，且绝不记录请求头或 Token。
+                detail = (response.text or "").strip()[:2000]
+                raise RuntimeError(
+                    f"CodeArts add comment HTTP {response.status_code}: {detail or 'empty response'}"
+                )
+            raw = response.content or b""
+        else:
+            response = self._client.call_api(
+                "/v2/issues/update-issue-notes",
+                "POST",
+                header_params={"Content-Type": "application/json"},
+                body=body,
+            )
+            raw = getattr(response, "raw_content", b"") or b""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
         if not raw:

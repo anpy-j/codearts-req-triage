@@ -42,40 +42,81 @@ class ProjectManClientRequestTest(unittest.TestCase):
             },
         )
 
-    def test_add_comment_passes_iam_token_when_configured(self):
+    @patch("requests.post")
+    def test_add_comment_uses_token_without_sdk_signing(self, mock_post):
+        mock_post.return_value.ok = True
+        mock_post.return_value.content = b'{"status":"success"}'
         client = ProjectManClient.__new__(ProjectManClient)
+        client.region = "cn-north-1"
         client.project_id = "a1b2c3d4e5f678901234567890abcdef"
+        client.endpoint = "https://projectman-ext.cn-north-1.myhuaweicloud.com"
         client.auth_token = "iam-token"
         client._client = MagicMock()
-        client._client.call_api.return_value.raw_content = b'{"status":"success"}'
 
         client.add_comment(7, "result")
 
-        kwargs = client._client.call_api.call_args.kwargs
-        self.assertEqual(kwargs["header_params"]["X-Auth-Token"], "iam-token")
+        client._client.call_api.assert_not_called()
+        mock_post.assert_called_once_with(
+            "https://projectman-ext.cn-north-1.myhuaweicloud.com/v2/issues/update-issue-notes",
+            headers={
+                "Content-Type": "application/json",
+                "X-Auth-Token": "iam-token",
+            },
+            json={
+                "id": "7",
+                "notes": "result",
+                "project_uuid": "a1b2c3d4e5f678901234567890abcdef",
+                "type": "scrum",
+            },
+            timeout=30,
+        )
 
     @patch("requests.post")
-    def test_add_comment_fetches_token_with_iam_credentials(self, mock_post):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 201
-        mock_resp.headers = {"X-Subject-Token": "auto-fetched-token"}
-        mock_post.return_value = mock_resp
+    def test_add_comment_reports_response_body_without_request_headers(self, mock_post):
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 400
+        mock_post.return_value.text = '{"error_code":"DEV_21_400"}'
 
         client = ProjectManClient.__new__(ProjectManClient)
         client.region = "cn-north-1"
         client.project_id = "a1b2c3d4e5f678901234567890abcdef"
+        client.endpoint = "https://projectman-ext.cn-north-1.myhuaweicloud.com"
+        client.auth_token = "secret-token"
+        client._client = MagicMock()
+
+        with self.assertRaisesRegex(RuntimeError, "DEV_21_400") as ctx:
+            client.add_comment(7, "result")
+
+        self.assertNotIn("secret-token", str(ctx.exception))
+
+    @patch("requests.post")
+    def test_add_comment_fetches_token_with_iam_credentials(self, mock_post):
+        token_resp = MagicMock()
+        token_resp.status_code = 201
+        token_resp.headers = {"X-Subject-Token": "auto-fetched-token"}
+        comment_resp = MagicMock()
+        comment_resp.ok = True
+        comment_resp.content = b'{"status":"success"}'
+        mock_post.side_effect = [token_resp, comment_resp]
+
+        client = ProjectManClient.__new__(ProjectManClient)
+        client.region = "cn-north-1"
+        client.project_id = "a1b2c3d4e5f678901234567890abcdef"
+        client.endpoint = "https://projectman-ext.cn-north-1.myhuaweicloud.com"
         client.auth_token = ""
         client.iam_domain = "test-domain"
         client.iam_user = "test-user"
         client.iam_password = "test-password"
         client._client = MagicMock()
-        client._client.call_api.return_value.raw_content = b'{"status":"success"}'
 
         client.add_comment(7, "result")
 
-        mock_post.assert_called_once()
-        kwargs = client._client.call_api.call_args.kwargs
-        self.assertEqual(kwargs["header_params"]["X-Auth-Token"], "auto-fetched-token")
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(
+            mock_post.call_args_list[1].kwargs["headers"]["X-Auth-Token"],
+            "auto-fetched-token",
+        )
+        client._client.call_api.assert_not_called()
 
 
 if __name__ == "__main__":
