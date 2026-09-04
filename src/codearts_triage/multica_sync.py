@@ -5,13 +5,30 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _completion_command(issue_id: int, project_id: Optional[str]) -> str:
+    """生成可从业务仓库执行的评论 + 状态闭环命令。"""
+    triage_root = Path(__file__).resolve().parent.parent.parent
+    bundled_python = triage_root / ".venv" / "bin" / "python"
+    python_bin = bundled_python if bundled_python.exists() else Path(sys.executable)
+    parts = [
+        shlex.quote(str(python_bin)),
+        shlex.quote(str(triage_root / "main.py")),
+    ]
+    if project_id:
+        parts.extend(["--hw-project", shlex.quote(str(project_id))])
+    parts.extend(["--resolve", str(issue_id), "--comment-file", "./codearts_reply.md"])
+    return " ".join(parts)
 
 
 DEFAULT_PROJECT_MAPPING = {
@@ -318,6 +335,7 @@ class MulticaSync:
         source_status: Optional[dict[str, Any]] = None,
         latest_comment: Optional[dict[str, Any]] = None,
         source_updated_time: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> None:
         """把测试打回追加到原任务，并重新运行原任务的当前智能体。"""
         multica_issue_id = str(existing.get("id") or "")
@@ -336,7 +354,19 @@ class MulticaSync:
         if latest_comment and latest_comment.get("comment"):
             feedback = str(latest_comment.get("comment") or "").strip()[:4000]
             lines.extend(["", "### 最新测试反馈", "", feedback])
-        lines.extend(["", "请继续在本任务中修复和验证，不要新建重复任务。"])
+        completion_cmd = _completion_command(codearts_issue_id, project_id)
+        lines.extend([
+            "",
+            "请继续在本任务中修复和验证，不要新建重复任务。完成后：",
+            "",
+            "1. 将脱敏后的根因、修改内容、测试结果、复测方法（以及 SQL，如有）写入 `./codearts_reply.md`；",
+            "2. 执行以下命令，系统会先把 `[AI处理结果]` 写入华为云评论，再将缺陷设为已解决：",
+            "",
+            "```bash",
+            completion_cmd,
+            "rm ./codearts_reply.md",
+            "```",
+        ])
 
         multica_bin = shutil.which("multica") or "multica"
         temp_file = None
@@ -560,6 +590,7 @@ class MulticaSync:
                     source_status=source_status,
                     latest_comment=latest_comment,
                     source_updated_time=source_updated_time,
+                    project_id=project_id,
                 )
                 logger.info("Retriggered existing Multica issue %s for CodeArts bug %s", multica_issue_id, issue_id)
             return multica_issue_id or None
@@ -604,19 +635,20 @@ class MulticaSync:
             url = f"https://devcloud.{region}.myhuaweicloud.com/projectman/workitems/issues/{project_id}/detail/{issue_id}"
             desc_lines.append(f"- **华为云直达链接**：<{url}>")
         desc_lines.extend(["", "### 原始问题描述", description or "（无描述）"])
-        proj_arg = f"--hw-project {project_id}" if project_id else ""
-        resolve_cmd = f"python main.py {proj_arg} --resolve {issue_id}".strip()
+        resolve_cmd = _completion_command(issue_id, project_id)
         git_flow_cmd = f"python git_flow.py -b {target_test_branch}"
 
         desc_lines.extend([
             "",
             "### 🛠 缺陷处理与交付规范（处理完毕后必须执行）",
             f"1. **代码提交与分支合流**：排查并修复代码后，将修改提交并合并推送到目标测试分支 **`{target_test_branch}`**（可使用命令 `{git_flow_cmd}` 或执行标准 git merge 推送）；",
-            f"2. **华为云缺陷状态回调**：分支合流完成后，必须执行以下指令将华为云 Bug #{issue_id} 状态更新为「已解决」：",
+            "2. **准备华为云交付评论**：将脱敏后的根因、修改内容、提交/PR、测试结果、复测方法写入 `./codearts_reply.md`；如果交付物是 SQL，必须附上可执行的只读 SQL、目标数据库和注意事项。禁止写入 Authorization、Cookie、Token、AK/SK 或密码。",
+            f"3. **评论与状态闭环**：执行以下指令；程序会先把 `[AI处理结果]` 写入华为云 Bug #{issue_id} 评论，成功后再将状态更新为「已解决」：",
             "   ```bash",
             f"   {resolve_cmd}",
+            "   rm ./codearts_reply.md",
             "   ```",
-            "3. **看板任务交付**：确认华为云状态更新完成后，将本 Multica 任务卡片状态变更为 `in_review`。",
+            "4. **看板任务交付**：确认华为云评论与状态更新完成后，将本 Multica 任务卡片状态变更为 `in_review`。",
         ])
 
         target_project_id = self.resolve_project(target_project_name)

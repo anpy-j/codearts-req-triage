@@ -98,6 +98,25 @@ class State:
         value = rec.get("source_comment_id")
         return str(value) if value is not None else None
 
+    def get_delivered_comment_hash(self, issue_id: int) -> Optional[str]:
+        rec = self._data["processed"].get(str(issue_id)) or {}
+        value = rec.get("delivered_comment_hash")
+        return str(value) if value is not None else None
+
+    def mark_delivered_comment(
+        self,
+        issue_id: int,
+        digest: str,
+        source_comment_id: Optional[str] = None,
+    ) -> None:
+        """记录已成功发往 CodeArts 的 AI 评论，供失败重试时幂等判重。"""
+        key = str(issue_id)
+        rec = dict(self._data["processed"].get(key) or {})
+        rec["delivered_comment_hash"] = digest
+        if source_comment_id is not None:
+            rec["source_comment_id"] = str(source_comment_id)
+        self._data["processed"][key] = rec
+
     def iter_processed(self) -> list:
         """遍历已处理记录 (issue_id_str, rec) 对，供评论水位等增量探测使用。"""
         return list(self._data["processed"].items())

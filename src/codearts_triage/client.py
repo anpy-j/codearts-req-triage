@@ -13,6 +13,7 @@ REST 路径（已在方案 §3 核验，SDK 3.1.210）：
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Optional
 
@@ -139,7 +140,7 @@ class ProjectManClient:
         return _issue_detail_to_dict(response)
 
     def list_comments(self, issue_id: int, limit: int = 100, offset: int = 0) -> list[dict]:
-        """获取工作项评论列表（只读，当前 OpenAPI 无写评论接口）。"""
+        """获取工作项评论列表。"""
         from huaweicloudsdkprojectman.v4.model import ListIssueCommentsV4Request
 
         request = ListIssueCommentsV4Request(
@@ -147,6 +148,37 @@ class ProjectManClient:
         )
         response = self._client.list_issue_comments_v4(request)
         return [{"id": c.id, "comment": c.comment, "created_time": c.created_time} for c in (response.comments or [])]
+
+    def add_comment(self, issue_id: int, notes: str) -> dict:
+        """给 Scrum 工作项添加评论。
+
+        AddIssueNotes（POST /v2/issues/update-issue-notes）已进入官方 API，但当前
+        huaweicloudsdkprojectman 尚未生成对应方法，因此复用 SDK Core 的 AK/SK 签名与
+        HTTP/异常处理能力发起原始请求。
+        """
+        response = self._client.call_api(
+            "/v2/issues/update-issue-notes",
+            "POST",
+            header_params={"Content-Type": "application/json"},
+            body={
+                "id": int(issue_id),
+                "notes": notes,
+                "project_uuid": self.project_id,
+                "type": "scrum",
+            },
+        )
+        raw = getattr(response, "raw_content", b"") or b""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return {"raw": str(raw)}
+        if isinstance(data, dict) and data.get("status") not in (None, "success"):
+            raise RuntimeError(f"CodeArts add comment failed: {data}")
+        return data if isinstance(data, dict) else {"result": data}
 
     def list_associated_commits(self, issue_id: int, limit: int = 50, offset: int = 0) -> list[dict]:
         """查询工作项已关联的代码提交记录。"""
@@ -271,6 +303,7 @@ class FakeClient:
         self.description_writes: list[tuple[int, str]] = []
         self.field_updates: list[dict] = []
         self.status_updates: list[tuple[int, int]] = []
+        self.comment_writes: list[tuple[int, str]] = []
 
     def list_issues(self, updated_time_interval=None, tracker_ids=None, limit=100, offset=0, include_deleted=False):
         self.calls.append(f"list_issues:{updated_time_interval}")
@@ -292,6 +325,14 @@ class FakeClient:
     def list_comments(self, issue_id, limit=100, offset=0):
         self.calls.append(f"list_comments:{issue_id}")
         return list(self.details.get(issue_id, {}).get("comments", []))[offset : offset + limit]
+
+    def add_comment(self, issue_id, notes):
+        self.calls.append(f"add_comment:{issue_id}")
+        self.comment_writes.append((issue_id, notes))
+        comments = self.details.setdefault(issue_id, {}).setdefault("comments", [])
+        comment_id = f"ai-{len(comments) + 1}"
+        comments.append({"id": comment_id, "comment": notes, "created_time": "2099-01-01"})
+        return {"status": "success"}
 
     def list_associated_commits(self, issue_id, limit=50, offset=0):
         self.calls.append(f"associated_commits:{issue_id}")

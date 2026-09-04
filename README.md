@@ -68,6 +68,16 @@ python main.py --once
 python main.py --loop
 ```
 
+### 修复完成后回传评论并关闭 Bug
+
+先把面向测试人员的交付说明写入 UTF-8 文件，再执行同一条闭环命令：
+
+```bash
+python main.py --hw-project <HW_PROJECT_ID> --resolve <BUG_ID> --comment-file ./codearts_reply.md
+```
+
+程序会自动添加 `[AI处理结果]` 标记并脱敏常见 Authorization、Cookie、Token、AK/SK、密码；同一内容按 hash 判重。执行顺序固定为“评论成功 → 状态改为已解决 → 更新评论水位”，评论失败不会提前关闭 Bug。SQL 类交付应包含只读 SQL、目标数据库、用途和注意事项。
+
 ## 测试打回后续跑原任务
 
 CodeArts Bug 与 Multica Issue 按 Bug ID 一对一绑定。巡检在创建前会查询包含已关闭任务在内的历史记录，因此同一个 Bug 不会重复建单。
@@ -77,7 +87,7 @@ CodeArts Bug 与 Multica Issue 按 Bug ID 一对一绑定。巡检在创建前�
 - 既不修改状态、正文，也不新增评论时，轮询端没有可观察到的新事件，因此不会重复触发。
 - 若原 Multica Issue 已在运行中，只追加最新反馈，不再并发启动第二个 run。
 
-执行 `--resolve` 后，程序会保存自身写回的状态快照，避免把自动改为「已解决」误判为测试打回。
+执行 `--resolve --comment-file` 后，程序会保存自身评论及状态快照；带 `[AI处理结果]` 的系统评论只推进水位，不会反向触发原任务。
 
 ## 默认保守写回
 

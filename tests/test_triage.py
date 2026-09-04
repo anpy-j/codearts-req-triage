@@ -684,6 +684,34 @@ class TriagePipelineTest(unittest.TestCase):
             self.assertEqual(summary["written"], 0)
             self.assertIsNone(state.get_source_comment_id(5))
 
+    def test_ai_delivery_comment_advances_baseline_without_retrigger(self):
+        """程序自身的 [AI处理结果] 只推进水位，不应再次运行原 Multica 任务。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(6, "详情页无数据", updated=_recent_hw_time())
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(
+                issues=[issue],
+                details={6: {"comments": [{"id": "ai-2", "created_time": _recent_hw_time(hour=9), "comment": "[AI处理结果] 已修复"}]}}
+            )
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            state.mark_processed(
+                6,
+                _recent_hw_time(),
+                "same-hash",
+                multica_issue_id="multica-6",
+                source_status_id=3,
+                source_comment_id="human-1",
+            )
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-6")
+
+            pipeline.run_once()
+
+            self.assertEqual(state.get_source_comment_id(6), "ai-2")
+            pipeline.multica_sync.sync_issue.assert_not_called()
+
     def test_legacy_comment_is_baselined_without_retrigger(self):
         """无基线历史项只含存量评论（早于处理时间）时：仅校准基线、不触发，且下轮不再探测。"""
         import tempfile

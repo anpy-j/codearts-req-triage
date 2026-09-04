@@ -323,7 +323,9 @@ class MulticaSyncTest(unittest.TestCase):
 
         self.assertIn("- **目标测试分支**：`test-cloud`", content)
         self.assertIn("git_flow.py -b test-cloud", content)
-        self.assertIn("--hw-project a1b2c3d4e5f678901234567890abcdef --resolve 888999", content)
+        self.assertIn("--hw-project a1b2c3d4e5f678901234567890abcdef --resolve 888999 --comment-file ./codearts_reply.md", content)
+        self.assertIn("先把 `[AI处理结果]` 写入华为云", content)
+        self.assertIn("rm ./codearts_reply.md", content)
         self.assertIn("in_review", content)
 
     @patch("subprocess.run")

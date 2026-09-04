@@ -117,11 +117,13 @@ graph TD
 ```markdown
 ### 🛠 缺陷处理与交付规范（处理完毕后必须执行）
 1. **代码提交与分支合流**：排查并修复代码后，将修改提交并合并推送到目标测试分支 **`test-cloud`**（可使用命令 `python git_flow.py -b test-cloud` 或手动执行 git merge 推送）；
-2. **华为云缺陷状态回调**：分支合流完成后，必须执行以下指令将华为云 Bug #71082376 状态更新为「已解决」：
+2. **准备交付评论**：将脱敏后的根因、修改内容、提交/PR、测试结果、复测方法及 SQL（如有）写入 `./codearts_reply.md`。
+3. **华为云评论与状态闭环**：执行以下指令；评论写入成功后才将 Bug #71082376 更新为「已解决」：
    ```bash
-   python main.py --hw-project a1b2c3d4e5f678901234567890abcdef --resolve 71082376
+   python main.py --hw-project a1b2c3d4e5f678901234567890abcdef --resolve 71082376 --comment-file ./codearts_reply.md
+   rm ./codearts_reply.md
    ```
-3. **看板任务交付**：确认华为云状态更新完成后，将本 Multica 任务卡片状态变更为 `in_review`。
+4. **看板任务交付**：确认华为云评论和状态更新完成后，将本 Multica 任务卡片状态变更为 `in_review`。
 ```
 
 ---
@@ -146,9 +148,10 @@ graph TD
   ```bash
   python main.py \
     --hw-project a1b2c3d4e5f678901234567890abcdef \
-    --resolve <HW_BUG_ID>
+    --resolve <HW_BUG_ID> \
+    --comment-file ./codearts_reply.md
   ```
-- 命令执行后秒级生效：华为云上的缺陷状态立即被置为 **「已解决」 (`status_id: 3`)**，同时 Multica 看板卡片完成流转，实现全自动跨平台闭环。
+- 命令执行后先写入带 `[AI处理结果]` 标记的脱敏交付评论；同一内容按 hash 判重。评论成功后，华为云缺陷才会被置为 **「已解决」 (`status_id: 3`)**。
 
 ### 3. 测试打回与原任务续跑
 
@@ -157,7 +160,7 @@ graph TD
 1. 测试将状态改回「新建」(`1`) 或「进行中」(`2`)：巡检在原任务追加通知，并对原智能体执行 `multica issue rerun`。
 2. 测试不改状态：必须新增 CodeArts 评论并写明未通过原因；巡检检测最新评论 ID 的变化后，以相同方式续跑原任务。
 3. 原任务处于 `in_progress` 时只追加反馈，避免产生并发 run；成员负责的任务则回到 `todo` 收件箱。
-4. 程序通过 `--resolve` 主动写入「已解决」后，会保存来源快照，下一轮不会把自身写回当作测试打回。
+4. 程序通过 `--resolve --comment-file` 写入的 `[AI处理结果]` 评论只推进来源水位，不会把自身评论误判为测试打回。
 
 如果状态、正文和评论均没有变化，轮询端没有新事件可识别，不会触发重复执行。
 

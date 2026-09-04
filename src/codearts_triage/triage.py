@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from .client import F_DESCRIPTION, F_ID, F_MODULE, F_NAME, F_SEVERITY, F_STATUS, F_UPDATED_TIME
 from .code_search import merge_code_hints, search_commits_in_repo, search_in_repo
+from .completion import is_ai_comment
 from .config import Config
 from .rules import Rules
 from .state import State
@@ -282,6 +283,11 @@ class TriagePipeline:
             )
             latest_id = str(latest.get("id")) if latest and latest.get("id") is not None else None
             baseline = self.state.get_source_comment_id(issue_id)
+            if latest_id is not None and is_ai_comment(latest):
+                # 本程序写入的交付评论只推进水位，绝不能反向触发原任务。
+                if persist and latest_id != baseline:
+                    self.state.update_source_snapshot(issue_id, source_comment_id=latest_id)
+                continue
             if baseline:
                 if latest_id is not None and latest_id != baseline:
                     pending.add(issue_id)
@@ -368,12 +374,13 @@ class TriagePipeline:
                     if latest_comment and latest_comment.get("id") is not None
                     else None
                 )
+                trigger_comment_id = None if is_ai_comment(latest_comment) else source_comment_id
                 known_multica_id = self.state.get_multica_issue_id(issue_id)
                 should_retrigger = self._should_retrigger(
                     issue_id,
                     h,
                     source_status_id,
-                    source_comment_id,
+                    trigger_comment_id,
                 )
 
                 # 幂等：结果未变且无未清错误 → 跳过写回，但仍需刷新 stored updated_time，

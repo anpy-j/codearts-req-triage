@@ -71,8 +71,12 @@ def main() -> int:
     parser.add_argument("--test-branch", "--target-branch", dest="test_branch", default=None, help="目标测试合并分支名称（如 test-cloud，默认: test-cloud）")
     parser.add_argument("--auto-assign-agent", action="store_true", help="是否直接指派给对应智能体并立即触发任务（默认存入成员收件箱，不直接触发任务）")
     parser.add_argument("--resolve", type=int, default=None, help="将指定华为云缺陷 ID 标记为「已解决」(status_id=3)")
+    parser.add_argument("--comment-file", default=None, help="在 --resolve 前把 UTF-8 文件内容作为 [AI处理结果] 评论写入华为云")
     parser.add_argument("--set-status", nargs=2, metavar=("ISSUE_ID", "STATUS_ID"), type=int, default=None, help="修改指定华为云缺陷状态")
     args = parser.parse_args()
+
+    if args.comment_file and not args.resolve:
+        parser.error("--comment-file 必须与 --resolve <BUG_ID> 一起使用")
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -109,38 +113,23 @@ def main() -> int:
         ak = cfg.ak_write or cfg.ak_read
         sk = cfg.sk_write or cfg.sk_read
         from codearts_triage.client import ProjectManClient
+        from codearts_triage.completion import complete_issue
+        from codearts_triage.state import State
         client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
         try:
-            client.update_status(args.resolve, status_id=3)
-            # 记录本程序主动回写的状态，避免下一轮把“已解决”误判为测试打回。
-            try:
-                from codearts_triage.state import State
-
-                detail = client.show_issue(args.resolve)
-                comments = client.list_comments(args.resolve)
-                latest_comment = max(
-                    comments,
-                    key=lambda item: (
-                        str(item.get("created_time") or ""),
-                        str(item.get("id") or ""),
-                    ),
-                    default=None,
-                )
-                source_comment_id = (
-                    str(latest_comment.get("id"))
-                    if latest_comment and latest_comment.get("id") is not None
-                    else None
-                )
-                state = State(cfg.state_file)
-                state.update_source_snapshot(
-                    args.resolve,
-                    updated_time=detail.get("updated_time"),
-                    source_status_id=3,
-                    source_comment_id=source_comment_id,
-                )
-                state.save()
-            except Exception as snapshot_exc:
-                logging.warning("华为云状态已更新，但本地防重快照记录失败: %s", snapshot_exc)
+            comment_text = None
+            if args.comment_file:
+                comment_text = Path(args.comment_file).read_text(encoding="utf-8")
+            result = complete_issue(
+                client,
+                State(cfg.state_file),
+                args.resolve,
+                comment_text=comment_text,
+            )
+            if result["comment_written"]:
+                print(f"成功向华为云 Bug #{args.resolve} 写入 [AI处理结果] 评论")
+            elif result["comment_skipped"]:
+                print(f"华为云 Bug #{args.resolve} 的相同 [AI处理结果] 已写入，跳过重复评论")
             print(f"成功将华为云 Bug #{args.resolve} 状态更新为「已解决」 (status_id=3)")
             return 0
         except Exception as e:

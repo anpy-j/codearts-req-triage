@@ -15,13 +15,13 @@
 | `ShowIssueV4` 可查详情 | ✅ 确证。`GET /v4/projects/{project_id}/issues/{issue_id}`，含 `description` 等完整字段 | 分诊输入成立 |
 | `UpdateIssueV4` 可改优先级/模块/负责人 | ✅ 确证。请求体 `IssueRequestV4` 含 `priority_id`、`module_id`、`assigned_id`、`severity_id`、`status_id`、`name`、`description`、`new_custom_fields` | 写回字段成立 |
 | `UpdateIssueV4` 可「打标签」 | ⚠️ **修正**。`IssueRequestV4` 无 `tags`/`label` 字段；标签在响应 `Workitems.tags` 中可读，但**当前 OpenAPI 无写标签端点**（API Explorer 检索无任何 ProjectMan 标签写接口） | 标签写回降级为「自定义字段」或「描述追加」，见 §5 |
-| `ListIssueCommentsV4` 可「写评论」 | ⚠️ **修正**。该接口为 `GET`（获取评论列表），**只读**；全量 API 目录（SDK ×3 + MCP 目录 + API Explorer 在线检索）均**不存在**创建评论的接口 | 评论写回改为「描述追加 + 评论模板」或「自定义字段」，见 §5 |
+| `ListIssueCommentsV4` 可「写评论」 | ⚠️ **修正**。该 V4 接口本身仍为只读；华为云 2026-08 更新的官方 API 已新增 `AddIssueNotes`：`POST /v2/issues/update-issue-notes`。当前 Python SDK 尚未生成便捷方法，MVP 通过 SDK Core 的 AK/SK 签名请求封装 | 修复交付结果可写入真实评论；分诊主通道仍保留自定义字段 |
 | webhook（服务钩子）可用 | ❓ 未确证。华为云文档站反爬，需成员在控制台确认（见 §1） | 阶段二默认走轮询，webhook 为后续增强 |
 
 **结论**：阶段二 MVP 的写回策略调整为「**保守三通道**」——
 1. 必做：`UpdateIssueV4` 写入**自定义字段**（如「AI 分诊」字段，需成员先在 Req 项目设置里建好，见 §6）；
 2. 可选（默认关）：`UpdateIssueV4` 改 `severity_id` / `priority_id` / `module_id` / `assigned_id`（需成员明确授权，见 §7 规则）；
-3. 信息记录：在 issue 描述末尾追加一段带标记的分诊摘要（`description` 字段，可追溯、可回滚），替代无法实现的「评论」写入。
+3. 信息记录：分诊阶段继续在 description 追加带标记摘要；修复交付阶段通过 `AddIssueNotes` 写入带 `[AI处理结果]` 标记的评论，并在评论成功后更新状态。
 
 ---
 
@@ -126,11 +126,17 @@
 
 > ⚠️ 无 `tags` 字段 → 标签写回需成员确认是否有其他端点，否则用自定义字段代替（§0）。
 
-### 3.4 ListIssueCommentsV4 — 获取工作项评论列表（**只读**）
+### 3.4 ListIssueCommentsV4 — 获取工作项评论列表
 - 方法/路径：`GET /v4/projects/{project_id}/issues/{issue_id}/comments`
-- 返回：`comments[{id, comment, created_time, user}]`。用途：轮询时判断「是否已有人工/历史评论」，**不能用于写评论**。
+- 返回：`comments[{id, comment, created_time, user}]`。用途：人工反馈水位与评论写入后的幂等确认；该 GET 接口本身不负责写评论。
 
-### 3.5 ListIssueAssociatedCommits — 查询关联提交（代码定位辅助）
+### 3.5 AddIssueNotes — 添加工作项评论
+- 方法/路径：`POST /v2/issues/update-issue-notes`
+- 请求体：`{id, project_uuid, notes, type: "scrum"}`。
+- 用途：智能体修复完成后回传根因、修改内容、提交/PR、测试结果、复测方式及只读 SQL（如有）。评论统一带 `[AI处理结果]`，先脱敏、再按内容 hash 判重；成功后才把 Bug 更新为已解决。
+- SDK 现状：官方 Python 包当前未生成对应方法，使用 SDK Core 的现有凭据签名及 HTTP 异常处理能力调用。
+
+### 3.6 ListIssueAssociatedCommits — 查询关联提交（代码定位辅助）
 - 方法/路径：`GET /v4/projects/{project_id}/issues/{issue_id}/associated-commits?type=commit`（`type` 必填，可取 `commit` / `branch`；MVP 查询提交记录）
 - 返回：`commits[{repository_id, commit_id, commit_short_id, commit_msg, commit_url, branch_name, user}]`。
 - 用途：缺陷若已关联代码提交，可直接给出 commit 线索；未关联时用本地 clone `git log -S` 关键词定位（§2 可选模块）。
