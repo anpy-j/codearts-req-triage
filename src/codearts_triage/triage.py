@@ -36,6 +36,7 @@ def _parse_hw_datetime(value) -> Optional[datetime]:
         return None
     s = str(value).strip()
     for fmt in (
+        "%Y-%m-%d",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
         "%Y-%m-%dT%H:%M:%S",
@@ -288,7 +289,7 @@ class TriagePipeline:
                 comment_time = _parse_hw_datetime(latest.get("created_time"))
                 if comment_time is not None and comment_time > rec_time:
                     pending.add(issue_id)
-                elif persist:
+                elif comment_time is not None and persist:
                     # 存量历史评论：回填基线，避免下一轮重复探测误判
                     self.state.update_source_snapshot(issue_id, source_comment_id=latest_id)
         return pending

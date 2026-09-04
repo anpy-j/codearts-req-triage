@@ -13,6 +13,7 @@ from codearts_triage.config import Config
 from codearts_triage.rules import Rules
 from codearts_triage.state import State
 from codearts_triage.triage import TriagePipeline
+from codearts_triage.writeback import triage_hash
 
 
 def _issue(issue_id, title, severity="一般", updated="2026-08-18 08:00:00", desc="", tracker_id=3):
@@ -629,6 +630,59 @@ class TriagePipelineTest(unittest.TestCase):
             self.assertTrue(kwargs["retrigger"])
             self.assertEqual(kwargs["latest_comment"]["id"], "c9")
             self.assertEqual(state.get_source_comment_id(2), "c9")
+
+    def test_date_only_comment_time_retriggers_legacy_issue(self):
+        """真实 ListIssueCommentsV4 只返回 YYYY-MM-DD 时也不能吞掉测试反馈。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(4, "详情页无数据", updated="2026-09-03 17:46:41")
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(
+                issues=[issue],
+                details={4: {"comments": [{"id": "89957499", "created_time": "2026-09-04", "comment": "仍未修好"}]}}
+            )
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            state.mark_processed(
+                4,
+                "2026-09-03 17:46:41",
+                triage_hash(pipeline.triage_issue(issue)[1]),
+                multica_issue_id="multica-4",
+                source_status_id=3,
+            )
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-4")
+
+            summary = pipeline.run_once()
+
+            self.assertEqual(summary["written"], 1)
+            self.assertTrue(pipeline.multica_sync.sync_issue.call_args.kwargs["retrigger"])
+            self.assertEqual(state.get_source_comment_id(4), "89957499")
+
+    def test_unparseable_comment_time_is_not_consumed_as_baseline(self):
+        """无法比较的评论时间保持待探测，不能静默标记为已处理。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(5, "详情页无数据", updated=_recent_hw_time())
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(
+                issues=[issue],
+                details={5: {"comments": [{"id": "c-unknown", "created_time": "unknown", "comment": "仍未修好"}]}}
+            )
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            state.mark_processed(
+                5,
+                _recent_hw_time(),
+                triage_hash(pipeline.triage_issue(issue)[1]),
+                multica_issue_id="multica-5",
+                source_status_id=3,
+            )
+
+            summary = pipeline.run_once()
+
+            self.assertEqual(summary["written"], 0)
+            self.assertIsNone(state.get_source_comment_id(5))
 
     def test_legacy_comment_is_baselined_without_retrigger(self):
         """无基线历史项只含存量评论（早于处理时间）时：仅校准基线、不触发，且下轮不再探测。"""
