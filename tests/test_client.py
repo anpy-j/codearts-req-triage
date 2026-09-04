@@ -23,6 +23,7 @@ class ProjectManClientRequestTest(unittest.TestCase):
     def test_add_comment_uses_official_v2_endpoint_with_sdk_signing(self):
         client = ProjectManClient.__new__(ProjectManClient)
         client.project_id = "a1b2c3d4e5f678901234567890abcdef"
+        client.auth_token = ""
         client._client = MagicMock()
         client._client.call_api.return_value.raw_content = b'{"status":"success"}'
 
@@ -40,6 +41,18 @@ class ProjectManClientRequestTest(unittest.TestCase):
                 "type": "scrum",
             },
         )
+
+    def test_add_comment_passes_iam_token_when_configured(self):
+        client = ProjectManClient.__new__(ProjectManClient)
+        client.project_id = "a1b2c3d4e5f678901234567890abcdef"
+        client.auth_token = "iam-token"
+        client._client = MagicMock()
+        client._client.call_api.return_value.raw_content = b'{"status":"success"}'
+
+        client.add_comment(7, "result")
+
+        kwargs = client._client.call_api.call_args.kwargs
+        self.assertEqual(kwargs["header_params"]["X-Auth-Token"], "iam-token")
 
 
 if __name__ == "__main__":

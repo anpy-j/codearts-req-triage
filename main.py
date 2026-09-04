@@ -47,7 +47,7 @@ def build_pipeline(cfg) -> tuple:
     sk = cfg.sk_write or cfg.sk_read
     if cfg.writeback_enabled and not cfg.has_write_credentials:
         logging.warning("WRITEBACK_ENABLED=true 但未配置写回 key，将使用只读 key（仅写自定义字段/描述，需成员确认权限）")
-    client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
+    client = ProjectManClient(cfg.region, ak, sk, cfg.project_id, auth_token=cfg.auth_token)
     rules = Rules.load(cfg.rules_file)
     state = State(cfg.state_file)
     return TriagePipeline(client, cfg, rules, state), rules, state
@@ -115,7 +115,7 @@ def main() -> int:
         from codearts_triage.client import ProjectManClient
         from codearts_triage.completion import complete_issue
         from codearts_triage.state import State
-        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
+        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id, auth_token=cfg.auth_token)
         try:
             comment_text = None
             if args.comment_file:
@@ -141,7 +141,7 @@ def main() -> int:
         ak = cfg.ak_write or cfg.ak_read
         sk = cfg.sk_write or cfg.sk_read
         from codearts_triage.client import ProjectManClient
-        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id)
+        client = ProjectManClient(cfg.region, ak, sk, cfg.project_id, auth_token=cfg.auth_token)
         try:
             client.update_status(issue_id, status_id=status_id)
             print(f"成功将华为云 Bug #{issue_id} 状态更新为 status_id={status_id}")

@@ -66,6 +66,8 @@ class Config:
     sk_read: str = field(default_factory=lambda: os.getenv("HW_SK_READ", ""))
     ak_write: str = field(default_factory=lambda: os.getenv("HW_AK_WRITE", ""))
     sk_write: str = field(default_factory=lambda: os.getenv("HW_SK_WRITE", ""))
+    # AddIssueNotes V2 在部分租户仅接受 IAM X-Auth-Token；只从环境变量读取。
+    auth_token: str = field(default_factory=lambda: os.getenv("HW_AUTH_TOKEN", ""))
 
     tracker_ids: list[int] = field(default_factory=lambda: _env_int_list("TRACKER_IDS", "3"))
     poll_limit: int = field(default_factory=lambda: _env_int("POLL_LIMIT", 100))

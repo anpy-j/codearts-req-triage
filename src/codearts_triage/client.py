@@ -89,12 +89,13 @@ def _issue_detail_to_dict(item: Any) -> dict:
 class ProjectManClient:
     """官方 SDK 薄封装。构造时传入凭据，只读/写回共用同一封装。"""
 
-    def __init__(self, region: str, ak: str, sk: str, project_id: str):
+    def __init__(self, region: str, ak: str, sk: str, project_id: str, auth_token: str = ""):
         from huaweicloudsdkcore.auth.credentials import BasicCredentials
         from huaweicloudsdkprojectman.v4.projectman_client import ProjectManClient as SDKClient
         from huaweicloudsdkprojectman.v4.region.projectman_region import ProjectManRegion
 
         self.project_id = project_id
+        self.auth_token = auth_token.strip()
         self._client = (
             SDKClient.new_builder()
             .with_credentials(BasicCredentials(ak, sk))
@@ -156,17 +157,28 @@ class ProjectManClient:
         huaweicloudsdkprojectman 尚未生成对应方法，因此复用 SDK Core 的 AK/SK 签名与
         HTTP/异常处理能力发起原始请求。
         """
-        response = self._client.call_api(
-            "/v2/issues/update-issue-notes",
-            "POST",
-            header_params={"Content-Type": "application/json"},
-            body={
-                "id": int(issue_id),
-                "notes": notes,
-                "project_uuid": self.project_id,
-                "type": "scrum",
-            },
-        )
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["X-Auth-Token"] = self.auth_token
+        try:
+            response = self._client.call_api(
+                "/v2/issues/update-issue-notes",
+                "POST",
+                header_params=headers,
+                body={
+                    "id": int(issue_id),
+                    "notes": notes,
+                    "project_uuid": self.project_id,
+                    "type": "scrum",
+                },
+            )
+        except Exception as exc:
+            if not self.auth_token:
+                raise RuntimeError(
+                    "CodeArts AddIssueNotes rejected AK/SK signing; set HW_AUTH_TOKEN "
+                    "from an IAM project token in the local .env (never post it to an issue)"
+                ) from exc
+            raise
         raw = getattr(response, "raw_content", b"") or b""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")

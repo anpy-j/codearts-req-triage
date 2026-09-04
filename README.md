@@ -47,6 +47,7 @@ pip install -r requirements.txt
 cp .env.example .env
 cp rules.example.yaml rules.yaml
 # 编辑 .env：填 HW_PROJECT_ID、HW_AK_READ、HW_SK_READ（至少只读 key）
+# 评论接口若提示 AddIssueNotes 拒绝 AK/SK，再在本地填 HW_AUTH_TOKEN（勿发到 issue）
 ```
 
 **安全约定**：AK/SK 一律环境变量注入，绝不写入 issue 正文、文档或提交历史。
@@ -76,7 +77,7 @@ python main.py --loop
 python main.py --hw-project <HW_PROJECT_ID> --resolve <BUG_ID> --comment-file ./codearts_reply.md
 ```
 
-程序会自动添加 `[AI处理结果]` 标记并脱敏常见 Authorization、Cookie、Token、AK/SK、密码；同一内容按 hash 判重。执行顺序固定为“评论成功 → 状态改为已解决 → 更新评论水位”，评论失败不会提前关闭 Bug。SQL 类交付应包含只读 SQL、目标数据库、用途和注意事项。
+程序会自动添加 `[AI处理结果]` 标记并脱敏常见 Authorization、Cookie、Token、AK/SK、密码；同一内容按 hash 判重。执行顺序固定为“评论成功 → 状态改为已解决 → 更新评论水位”，评论失败不会提前关闭 Bug。SQL 类交付应包含只读 SQL、目标数据库、用途和注意事项。`AddIssueNotes` V2 在部分租户只接受 IAM 项目 Token；此时把 `HW_AUTH_TOKEN` 注入本地 `.env`，不得写入 issue 或仓库。Token 通常 24 小时有效，过期需刷新。
 
 ## 测试打回后续跑原任务
 
