@@ -90,3 +90,21 @@ def merge_code_hints(local_hits: list[dict], api_commits: list[dict]) -> list[di
     for c in api_commits:
         hints.append({"kind": "commit", **c})
     return hints
+
+
+def extract_keywords(text: str, max_keywords: int = 5) -> list[str]:
+    """提取英文标识符/接口名/类名作为代码搜索关键词。"""
+    import re
+
+    # 驼峰/下划线标识符、接口路径、数字错误码
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_]{2,}", text or "")
+    seen: list[str] = []
+    for t in tokens:
+        low = t.lower()
+        if low in ("the", "and", "for", "bug", "issue", "error", "not", "with", "this", "when", "has"):
+            continue
+        if low not in seen:
+            seen.append(low)
+        if len(seen) >= max_keywords:
+            break
+    return seen

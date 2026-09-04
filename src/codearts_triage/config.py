@@ -75,7 +75,6 @@ class Config:
     timezone_offset_hours: int = field(default_factory=lambda: _env_int("TIMEZONE_OFFSET_HOURS", 8))
 
     state_file: str = field(default_factory=lambda: os.getenv("STATE_FILE", "./state.json"))
-    rules_file: str = field(default_factory=lambda: os.getenv("RULES_FILE", "./rules.yaml"))
     repo_local_path: str = field(default_factory=lambda: os.getenv("CODEARTS_REPO_LOCAL_PATH", ""))
     # 单条连续失败达到该次数后放弃自动重试（转 poisoned），避免永久阻塞游标
     max_error_attempts: int = field(

@@ -77,7 +77,11 @@ def build_description_block(result: dict[str, Any]) -> str:
                 lines.append(f"  - `{h.get('file')}:{h.get('line')}`")
             else:
                 lines.append(f"  - commit `{h.get('commit_short_id') or h.get('commit')}` {h.get('commit_msg', '')[:60]}")
-    lines.append(f"- 说明：自动化分诊生成，仅供参考（规则 v{result.get('rule_version', '?')}）")
+    rule_ver = result.get("rule_version")
+    if rule_ver:
+        lines.append(f"- 说明：自动化分诊生成，仅供参考（规则 v{rule_ver}）")
+    else:
+        lines.append("- 说明：自动化分诊生成，仅供参考")
     lines.append(TRIAGE_MARKER_END)
     return sanitize_req_text("\n".join(lines))
 
