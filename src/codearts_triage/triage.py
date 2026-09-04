@@ -26,6 +26,28 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_hw_datetime(value) -> Optional[datetime]:
+    """解析华为云返回的本地时间字符串（兼容 'YYYY-MM-DD HH:MM:SS'、带 T 及毫秒变体）。
+
+    华为云 updated_time / 评论 created_time 为项目时区（默认东八区）的本地时间、无时区标记，
+    两者同口径直接比较即可。无法解析返回 None，调用方保守处理（不触发）。
+    """
+    if not value:
+        return None
+    s = str(value).strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+    ):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 class TriagePipeline:
     def __init__(self, client, config: Config, rules: Rules, state: State):
         self.client = client
@@ -214,6 +236,63 @@ class TriagePipeline:
             return True
         return False
 
+    # 华为云新增评论不会刷新工作项 updated_time（ListIssuesV4 增量窗口与 needs_retriage
+    # 都只认它），因此“已解决/已关闭后测试打回评论”必须单独按评论水位探测：对近期处理过的
+    # 已解决/已关闭或已同步 Multica 的已知缺陷，每轮直接 ListIssueCommentsV4 对比最新评论
+    # 与快照基线 source_comment_id，发现新评论时强制重处理（即使 updated_time 未变）。
+    COMMENT_PROBE_MAX_AGE_DAYS = 7  # 只盯近期处理过的项，控制每轮评论查询成本
+
+    def _probe_comment_retriggers(self, persist: bool = True) -> set[int]:
+        """探测“仅新增评论”的测试打回，返回需要强制重处理的 CodeArts issue id 集合。
+
+        - 快照已有评论基线：最新评论 id 与基线不一致 → 触发。
+        - 快照无基线（历史记录未记录过评论）：以“最新评论时间晚于快照处理时间”判定；
+          无法比较或评论更早时只校准基线、不触发（避免把存量历史评论误判为新反馈）。
+        校准写回仅在 persist=True（真实写回模式）执行，只读/预览轮次不污染状态。
+        """
+        pending: set[int] = set()
+        # 华为云字段为项目时区（默认东八）本地时间，与快照解析口径保持一致
+        offset = getattr(self.config, "timezone_offset_hours", 8)
+        now = datetime.now(timezone(timedelta(hours=offset))).replace(tzinfo=None)
+        for key, rec in self.state.iter_processed():
+            issue_id = int(key)
+            source_status_id = rec.get("source_status_id")
+            if source_status_id not in (3, 5) and not rec.get("multica_issue_id"):
+                # 开放态(1/2) 已由 updated_time 增量覆盖；其余未同步项无需盯评论
+                continue
+            rec_time = _parse_hw_datetime(rec.get("updated_time"))
+            if rec_time is None or (now - rec_time).days > self.COMMENT_PROBE_MAX_AGE_DAYS:
+                continue
+            try:
+                comments = self.client.list_comments(issue_id)
+            except Exception as exc:  # noqa: BLE001 — 单条探测失败不阻断整轮
+                logger.warning("failed to list comments for comment-probe issue %s: %s", issue_id, exc)
+                continue
+            latest = (
+                max(
+                    comments,
+                    key=lambda item: (
+                        str(item.get("created_time") or ""),
+                        str(item.get("id") or ""),
+                    ),
+                )
+                if comments
+                else None
+            )
+            latest_id = str(latest.get("id")) if latest and latest.get("id") is not None else None
+            baseline = self.state.get_source_comment_id(issue_id)
+            if baseline:
+                if latest_id is not None and latest_id != baseline:
+                    pending.add(issue_id)
+            elif latest_id is not None:
+                comment_time = _parse_hw_datetime(latest.get("created_time"))
+                if comment_time is not None and comment_time > rec_time:
+                    pending.add(issue_id)
+                elif persist:
+                    # 存量历史评论：回填基线，避免下一轮重复探测误判
+                    self.state.update_source_snapshot(issue_id, source_comment_id=latest_id)
+        return pending
+
     @staticmethod
     def _summarize(title: str, module: str, priority: str) -> str:
         return f"「{title[:50]}」→ 模块 {module}，建议优先级 {priority}"
@@ -242,9 +321,22 @@ class TriagePipeline:
         # 保证预览/只读运行不会污染后续真实运行的进度。
         persist = self.config.writeback_enabled and not dry_run
 
-        for issue in candidates:
+        # 评论水位增量：华为云新增评论不刷新工作项 updated_time，只靠 updated_time 窗口会漏掉
+        # “已解决/已关闭后仅新增评论”的测试打回。此处探测到新评论的已处理缺陷即使 updated_time
+        # 未变也强制重处理（并把它补进本轮候选，若其 updated_time 已滑出增量窗口）。
+        forced_ids = self._probe_comment_retriggers(persist=persist)
+        all_issues = list(candidates)
+        for forced_id in sorted(forced_ids):
+            if not any(item[F_ID] == forced_id for item in all_issues):
+                all_issues.append({
+                    F_ID: forced_id,
+                    F_UPDATED_TIME: self.state.get_processed_updated_time(forced_id),
+                })
+
+        for issue in all_issues:
             issue_id = issue[F_ID]
             updated_time = issue.get(F_UPDATED_TIME)
+            forced = issue_id in forced_ids
 
             if self.state.is_poisoned(issue_id):
                 # 连续失败已放弃（不再阻塞游标），跳过但保持记录供人工排查
@@ -252,8 +344,12 @@ class TriagePipeline:
                 continue
 
             if self.state.is_processed(issue_id):
-                # 有记录错误 → 不跳过，重新分诊/写回
-                if not self.state.needs_retriage(issue_id, updated_time) and not self.state.has_error(issue_id):
+                # 有记录错误 → 不跳过，重新分诊/写回；评论水位命中的强制项同样不跳过
+                if (
+                    not forced
+                    and not self.state.needs_retriage(issue_id, updated_time)
+                    and not self.state.has_error(issue_id)
+                ):
                     summary["skipped"] += 1
                     continue
                 logger.info("issue %s changed or errored, re-triaging", issue_id)
@@ -332,6 +428,14 @@ class TriagePipeline:
                         self.state.clear_error(issue_id)
                         if latest_updated is None or updated_time > latest_updated:
                             latest_updated = updated_time
+                    elif persist and forced:
+                        # 评论触发的历史项若快照缺少 updated_time，至少刷新评论基线/状态，防下轮重复触发
+                        self.state.update_source_snapshot(
+                            issue_id,
+                            source_status_id=source_status_id,
+                            source_comment_id=source_comment_id,
+                        )
+                        self.state.clear_error(issue_id)
                     continue
 
                 if persist:

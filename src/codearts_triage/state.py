@@ -98,6 +98,10 @@ class State:
         value = rec.get("source_comment_id")
         return str(value) if value is not None else None
 
+    def iter_processed(self) -> list:
+        """遍历已处理记录 (issue_id_str, rec) 对，供评论水位等增量探测使用。"""
+        return list(self._data["processed"].items())
+
     def update_source_snapshot(
         self,
         issue_id: int,

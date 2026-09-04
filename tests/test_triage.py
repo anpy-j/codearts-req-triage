@@ -31,6 +31,13 @@ def _issue(issue_id, title, severity="一般", updated="2026-08-18 08:00:00", de
     }
 
 
+def _recent_hw_time(days_ago=1, hour=8):
+    """近期（默认昨天指定小时）本地时间字符串：评论水位探测窗口默认只盯 7 天内处理过的项。"""
+    base = datetime.now() - timedelta(days=days_ago)
+    base = base.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return base.strftime("%Y-%m-%d %H:%M:%S")
+
+
 class TriagePipelineTest(unittest.TestCase):
     def setUp(self):
         self.config = Config()
@@ -553,6 +560,103 @@ class TriagePipelineTest(unittest.TestCase):
             kwargs = pipeline.multica_sync.sync_issue.call_args.kwargs
             self.assertTrue(kwargs["retrigger"])
             self.assertEqual(kwargs["latest_comment"]["id"], "c2")
+
+    def test_new_comment_retriggers_even_when_updated_time_unchanged(self):
+        """真实华为云行为：新增评论不刷新工作项 updated_time。
+
+        已解决缺陷仅新增测试评论（updated_time 保持不动）也必须触发原任务续跑——
+        回归场景：旧实现依赖 updated_time 变化，导致“仅加评论”的测试打回被静默跳过。
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(1, "登录超时", updated=_recent_hw_time())
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(
+                issues=[issue],
+                details={1: {"comments": [{"id": "c1", "created_time": _recent_hw_time(), "comment": "待验证"}]}}
+            )
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            pipeline.run_once()  # 第一轮已处理并记录评论基线 c1
+            self.assertEqual(state.get_source_comment_id(1), "c1")
+
+            # 关键：只新增评论，updated_time 保持不变（华为云评论不刷新工作项更新时间）
+            client.details[1]["comments"].append(
+                {"id": "c2", "created_time": _recent_hw_time(hour=9), "comment": "测试未通过，请重新修改"}
+            )
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-1")
+
+            summary = pipeline.run_once()
+
+            self.assertEqual(summary["written"], 1)
+            kwargs = pipeline.multica_sync.sync_issue.call_args.kwargs
+            self.assertTrue(kwargs["retrigger"])
+            self.assertEqual(kwargs["latest_comment"]["id"], "c2")
+            # 基线已推进，下一轮不再重复触发
+            self.assertEqual(state.get_source_comment_id(1), "c2")
+
+    def test_new_comment_retriggers_legacy_issue_without_comment_baseline(self):
+        """历史快照没有评论基线（如 71083121）时，晚于处理时间的评论仍应触发。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(2, "列表页白屏", updated=_recent_hw_time())
+            issue["status"] = {"id": 3, "name": "已解决"}
+            client = FakeClient(issues=[issue], details={2: {"comments": []}})
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            pipeline.run_once()  # 第一轮无任何评论 → 快照无 source_comment_id 基线
+            self.assertIsNone(state.get_source_comment_id(2))
+            state.mark_processed(
+                2,
+                _recent_hw_time(),
+                state.get_triage_hash(2),
+                multica_issue_id="multica-2",
+                source_status_id=3,
+            )
+
+            # 已解决后新增评论（时间晚于快照处理时间），updated_time 依旧不变
+            client.details[2]["comments"].append(
+                {"id": "c9", "created_time": _recent_hw_time(hour=9), "comment": "仍可复现，请继续处理"}
+            )
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-2")
+
+            summary = pipeline.run_once()
+
+            self.assertEqual(summary["written"], 1)
+            kwargs = pipeline.multica_sync.sync_issue.call_args.kwargs
+            self.assertTrue(kwargs["retrigger"])
+            self.assertEqual(kwargs["latest_comment"]["id"], "c9")
+            self.assertEqual(state.get_source_comment_id(2), "c9")
+
+    def test_legacy_comment_is_baselined_without_retrigger(self):
+        """无基线历史项只含存量评论（早于处理时间）时：仅校准基线、不触发，且下轮不再探测。"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            issue = _issue(3, "搜索无结果", updated=_recent_hw_time())
+            issue["status"] = {"id": 5, "name": "已关闭"}
+            client = FakeClient(
+                issues=[issue],
+                details={3: {"comments": [{"id": "old1", "created_time": _recent_hw_time(hour=7), "comment": "处理前的老评论"}]}},
+            )
+            pipeline, state = self._pipeline(client, f"{tmp}/state.json")
+            pipeline.run_once()
+            state.mark_processed(3, _recent_hw_time(), state.get_triage_hash(3), source_status_id=5)
+
+            # 第二轮：存量老评论（早于处理时间）只应回填基线，不应触发
+            pipeline.multica_sync.enabled = True
+            pipeline.multica_sync.sync_issue = MagicMock(return_value="multica-3")
+            summary = pipeline.run_once()
+            self.assertEqual(summary["written"], 0)
+            self.assertEqual(state.get_source_comment_id(3), "old1")
+            pipeline.multica_sync.sync_issue.assert_not_called()
+
+            # 第三轮：评论仍无新增 → 依旧静默
+            summary = pipeline.run_once()
+            self.assertEqual(summary["written"], 0)
+            pipeline.multica_sync.sync_issue.assert_not_called()
 
 
 if __name__ == "__main__":
